@@ -1,0 +1,6 @@
+name: ai-dlc-compass
+version: 0.1.0
+description: "AI-DLC Compass — AI-Driven Development Lifecycle steering, phase engine, and policy verification for Hermes Agent. Guides AI agents through Inception → Construction → Operation phases with steering rules (security, architecture, compliance). Integrates with MOA-Gate for escalated tier enforcement."
+author: "Hermes / LYN"
+hooks:
+  - pre_tool_call

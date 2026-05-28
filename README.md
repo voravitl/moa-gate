@@ -148,3 +148,25 @@ make install-hook
 ## License
 
 MIT
+
+## AI-DLC Compass
+
+| Component | Path | หน้าที่ |
+|-----------|------|--------|
+| **Plugin** `ai-dlc-compass` | `ai-dlc/` | 🧭 Steering rules + phase engine + policy verification |
+
+ติดตั้งคู่กับ MOA-Gate:
+
+```bash
+# Install both
+bash scripts/install.sh          # MOA-Gate
+bash ai-dlc/scripts/install.sh   # AI-DLC Compass
+```
+
+หรือ install แยก:
+
+```bash
+cd moa-gate && bash ai-dlc/scripts/install.sh
+```
+
+See `ai-dlc/README.md` for full docs.
