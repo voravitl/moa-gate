@@ -1,35 +1,49 @@
-# MOA Gate — Hermes Plugin
+# MOA Gate — Hermes Plugin + Skill
 
 Multi-Model Adviser (MOA) enforcement gate for Hermes Agent.  
 Controls write/destructive tool access based on council approval.
 
+รวม 2 component ใน repo เดียว:
+
+| Component | Path | หน้าที่ |
+|-----------|------|--------|
+| **Plugin** `moa-gate` | `plugin/` | 🔒 Block/unblock tools, signed state, audit log |
+| **Skill** `moa-adviser` | `skill/` | 🧠 เรียก 5-voice council เพื่อตัดสินใจ |
+
 ## Architecture
 
 ```
-┌─ MOA Council ─────────────────────────────────┐
-│  5 voices (Architect, Critic, Strategist,      │
-│  Pragmatist, Skeptic) → vote on changes         │
-└──────────────────────┬────────────────────────┘
-                       │ ≥80% approve
+User wants to make changes
+        │
+        ▼
+┌─ moa-adviser (skill) ───────────────────────┐
+│  /moa-adviser --voices 5                     │
+│  → 5 models (claude, codex, agy, ollama...)  │
+│  → approve / dissent / reason                │
+└──────────────────────┬──────────────────────┘
+                       │ council result
                        ▼
-┌─ Auto-Approve Engine ──────────────────────────┐
-│  ✓ Tier 1 (Auto) = non-security changes         │
-│  ✓ Weighted veto (Critic/Skeptic dissent = T2) │
-│  ✓ Cool-down period (default 120s)              │
-│  ✓ Rate limit (5/hour default)                  │
-│  ✓ Shadow mode (record only)                    │
-└──────────────────────┬────────────────────────┘
-                       │ state signed + audited
+┌─ moa-council-complete ───────────────────────┐
+│  /moa-council-complete '{"votes":...}'        │
+│  → Auto-approve if ≥80% + Tier 1             │
+│  → Weighted veto (Critic/Skeptic = T2)       │
+└──────────────────────┬──────────────────────┘
+                       │
                        ▼
-┌─ Enforcement Layers ───────────────────────────┐
-│  Layer 1: Plugin (pre_tool_call hook)          │
-│  Layer 2: Audit log (tamper-evident hash chain)│
-│  Layer 3: HMAC-signed state file               │
-│  (Git pre-commit hook in separate repo)         │
-└────────────────────────────────────────────────┘
+┌─ moa-gate (plugin) ──────────────────────────┐
+│  1. State: HMAC-SHA256 signed                │
+│  2. Audit: hash-chain log                    │
+│  3. Cool-down / shadow / rate limit          │
+│  4. pre_tool_call → allow block              │
+└──────────────────────┬──────────────────────┘
+                       │
+                       ▼
+              Write tools ผ่าน ✅ / ถูกบล็อก 🛑
 ```
 
 ## Files
+
+### Plugin (`plugin/`)
 
 | File | Purpose |
 |------|---------|
@@ -39,11 +53,22 @@ Controls write/destructive tool access based on council approval.
 | `__init__.py` | Plugin hook + slash commands |
 | `plugin.yaml` | Hermes plugin manifest |
 
+### Skill (`skill/`)
+
+| File | Purpose |
+|------|---------|
+| `SKILL.md` | MOA Adviser Council setup + CLI/Cloud mode |
+| `references/` | Docs for plugin integration, recovery, design |
+
 ## Installation
 
 ```bash
-# Clone to plugins dir
-git clone git@github.com:voravitl/moa-gate.git ~/.hermes/plugins/moa-gate
+# One-liner:
+git clone git@github.com:voravitl/moa-gate.git ~/.hermes/plugins/moa-gate && \
+  ln -sf ~/.hermes/plugins/moa-gate/skill ~/.hermes/skills/devops/moa-adviser
+
+# Or with Makefile:
+git clone git@github.com:voravitl/moa-gate.git && cd moa-gate && make install
 
 # Set HMAC key (auto-generated on first use if missing)
 echo 'MOA_GATE_KEY=your-64-char-hex-key' >> ~/.hermes/.env
