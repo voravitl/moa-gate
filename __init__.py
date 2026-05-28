@@ -292,9 +292,23 @@ def _handle_council_complete(raw_args: str) -> str:
     dissent_reason = council.get("dissent_reason", "")
     changed_paths = council.get("changed_paths", [])
     diff_keywords = council.get("diff_keywords", [])
+    mode = council.get("mode", "cloud")  # moa | cli | cloud
 
     if not votes:
         return "❌ No votes provided."
+
+    # Build mode warning prefix
+    mode_warning = ""
+    if mode == "cloud":
+        mode_warning = (
+            "\n⚠️  CLOUD MODE — ทุก voice ใช้ model เดียวกัน (session model)\n"
+            "   diversity จาก prompt engineering เท่านั้น\n"
+            "   → ควรใช้ MOA Tool mode (mixture_of_agents) หรือติดตั้ง CLI tools\n"
+        )
+    elif mode == "cli":
+        mode_warning = "\n⚡ CLI mode — real 3 models (claude + codex + agy)\n"
+    elif mode == "moa":
+        mode_warning = "\n🎯 MOA Tool mode — real 5 models ต่างบริษัท\n"
 
     total = len(votes)
     approved_names = [v for v, s in votes.items() if s == "approve"]
@@ -380,7 +394,8 @@ def _handle_council_complete(raw_args: str) -> str:
         result = (
             f"✅ MOA Gate: Auto-approved via council ({approved_count}/{total})\n"
             f"   Voices: {', '.join(approved_names)}\n"
-            f"   Tier: {ti.format_tier(final_tier)}\n"
+            f"   Tier: {ti.format_tier(final_tier)}"
+            f"{mode_warning}"
         )
         if dissented_names:
             result += f"   Dissent: {', '.join(dissented_names)} — creating issue...\n"
@@ -411,6 +426,9 @@ Subcommands:
            --reason <text>             Reason for approval (required)
            --override                  Override cool-down period
   council-complete '<json>'            Submit council results for auto-approve
+                                       JSON fields: votes (required), task_description,
+                                       dissent_reason, changed_paths, diff_keywords,
+                                       mode (\"moa\"|\"cli\"|\"cloud\", default=cloud)
   revoke                              Reset gate to pending
   log [N]                             Show last N audit log entries (default 10)
   verify                              Verify audit log chain integrity
