@@ -61,13 +61,13 @@ echo ""
 echo "[4/5] \U0001f3f0 Phase..."
 PHASE_FILE="$STATE_DIR/phase.json"
 if [ ! -f "$PHASE_FILE" ]; then
-    cat > "$PHASE_FILE" << 'PHASEEOF'
-{
-  "phase": "INCEPTION",
-  "history": [{"from": null, "to": "INCEPTION", "timestamp": "'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'", "reason": "Install — initial setup"}],
-  "current_phase_start": "'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"
-}
-PHASEEOF
+    python3 -c "
+import json, os
+from datetime import datetime, timezone
+data = {'phase': 'INCEPTION', 'history': [{'from': None, 'to': 'INCEPTION', 'timestamp': datetime.now(timezone.utc).isoformat(), 'reason': 'Install'}], 'current_phase_start': datetime.now(timezone.utc).isoformat()}
+with open(os.path.expanduser('$PHASE_FILE'), 'w') as f:
+    json.dump(data, f, indent=2)
+"
     echo "       \u2705 Phase set to INCEPTION"
 else
     echo "       \u23ed\ufe0f Skipped (exists)"
