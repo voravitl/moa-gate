@@ -62,6 +62,16 @@ User wants to make changes
 
 ## Installation
 
+### AI-friendly (one-shot)
+
+AI agent ใช้คำสั่งนี้ได้เลย — clone, skill, hook, key ทำทั้งหมด:
+
+```bash
+bash <(curl -sL https://raw.githubusercontent.com/voravitl/moa-gate/main/scripts/install.sh)
+```
+
+### Manual (clone)
+
 ```bash
 # One-liner:
 git clone git@github.com:voravitl/moa-gate.git ~/.hermes/plugins/moa-gate && \
@@ -69,9 +79,13 @@ git clone git@github.com:voravitl/moa-gate.git ~/.hermes/plugins/moa-gate && \
 
 # Or with Makefile:
 git clone git@github.com:voravitl/moa-gate.git && cd moa-gate && make install
+```
 
-# Set HMAC key (auto-generated on first use if missing)
-echo 'MOA_GATE_KEY=your-64-char-hex-key' >> ~/.hermes/.env
+### Pre-commit hook (optional)
+
+```bash
+make install-hook
+# หรือ: git config --global core.hooksPath ~/.hermes/moa-gate/
 ```
 
 ## Slash Commands

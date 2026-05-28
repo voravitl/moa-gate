@@ -1,20 +1,7 @@
 .PHONY: install uninstall test install-hook uninstall-hook
 
-install: install-hook
-	@echo "Installing MOA Gate..."
-	@mkdir -p ~/.hermes/plugins ~/.hermes/skills/devops
-	@ln -sfn $$(pwd) ~/.hermes/plugins/moa-gate
-	@ln -sfn $$(pwd)/skill ~/.hermes/skills/devops/moa-adviser
-	@echo "✅ Installed!"
-	@echo "   Plugin: ~/.hermes/plugins/moa-gate → $$(pwd)"
-	@echo "   Skill:  ~/.hermes/skills/devops/moa-adviser → $$(pwd)/skill"
-	@echo "   Hook:   git config core.hooksPath (global add)"
-	@echo ""
-	@echo "Next steps:"
-	@echo "  1. Set HMAC key:  echo 'MOA_GATE_KEY=$$(openssl rand -hex 32)' >> ~/.hermes/.env"
-	@echo "  2. Reload Hermes"
-	@echo "  3. Try:  /moa-status"
-	@echo "          /moa-adviser --help"
+install:
+	@bash scripts/install.sh
 
 uninstall: uninstall-hook
 	@rm -f ~/.hermes/plugins/moa-gate
