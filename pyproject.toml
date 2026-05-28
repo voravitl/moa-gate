@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "moa-gate"
+version = "1.1.0"
+description = "Multi-Model Adviser enforcement gate for Hermes Agent"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Hermes (redesigned after 7-voice council review)"},
+]
+requires-python = ">=3.10"
+
+[project.urls]
+Repository = "https://github.com/voravitl/moa-gate"
+
+[tool.setuptools.packages.find]
+include = ["moa_gate*"]
+
+[tool.setuptools.package-dir]
+moa_gate = "."
+
+[tool.setuptools.package-data]
+moa_gate = ["plugin.yaml"]
