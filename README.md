@@ -121,6 +121,10 @@ echo 'MOA_GATE_KEY=your-64-char-hex-key' >> ~/.hermes/.env
 - **Session isolation**: Cross-session approval rejected
 - **Atomic writes**: `tempfile` + `os.replace` (no partial writes)
 - **Weighted veto**: Critic/Skeptic dissent forces manual approval
+- **TTL expiry**: Default 15 min — state auto-expires
+- **P1 — Startup sweep**: Plugin checks & expires stale state on load
+- **P2 — Session end**: Auto-revoke when Hermes session ends
+- **P0 — Git pre-commit hook**: Worldwide git hook enforcing gate at OS level
 
 ## Requirements
 

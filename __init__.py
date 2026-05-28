@@ -576,11 +576,41 @@ def _handle_slash(raw_args: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Session End Hook (P2)
+# ---------------------------------------------------------------------------
+
+def _on_session_end(*, session_id: str = "", completed: bool = False,
+                     interrupted: bool = False, model: str = "",
+                     platform: str = "", **_: Any) -> None:
+    """Auto-revoke state when session ends.
+
+    P2 in council recommendation: auto-revoke on session end.
+    This handles graceful session shutdown.
+    Uninterruptible signals (kill -9, crash) require TTL-only recovery.
+    """
+    try:
+        data = st.read()
+        if data.get("status") == "approved":
+            st.revoke(f"Session ended (completed={completed}, interrupted={interrupted})")
+            au.log("revoke", by=["system"],
+                   reason=f"session_end_completed={completed}_interrupted={interrupted}",
+                   session_id=session_id)
+            logger.info("MOA Gate: auto-revoked on session end (%s)", session_id)
+    except Exception as exc:
+        # Never crash session teardown
+        logger.warning("MOA Gate: on_session_end error: %s", exc)
+
+
+# ---------------------------------------------------------------------------
 # Register
 # ---------------------------------------------------------------------------
 
 def register(ctx) -> None:
     ctx.register_hook("pre_tool_call", _on_pre_tool_call)
+
+    # P1: Startup sweep — auto-expire state if TTL passed
+    # st.read() checks expires_at and returns pending if expired
+    st.read()
 
     ctx.register_command(
         "moa-approve",
@@ -612,3 +642,6 @@ def register(ctx) -> None:
         handler=_handle_verify,
         description="Verify audit log integrity.",
     )
+
+    # P2: on_session_end — auto-revoke when session ends
+    ctx.register_hook("on_session_end", _on_session_end)

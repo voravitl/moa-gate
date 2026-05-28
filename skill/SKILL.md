@@ -486,12 +486,11 @@ delegate_task(goal="Review verdict...")
 ```
 ## MOA Council: [หัวข้อ]
 
-### Voice 1 — [CLI/Model] ([บทบาท])
+### Voice 1 — [Model/Source] ([บทบาท])
 [position + เหตุผล]
 
-### Voice 2 — ...
-
-### Voice 3 — ...
+### Voice 2 — [Model/Source] ([บทบาท])
+...
 
 ### Verdict
 - **Consensus:** [เห็นตรงกันตรงไหน]
@@ -499,6 +498,27 @@ delegate_task(goal="Review verdict...")
 - **Premise check:** [คำถามถูกต้องไหม?]
 - **Recommendation:** [ทางเลือกที่ดีที่สุด]
 - **Missing voices:** [ถ้ามีการ fallback — แจ้ง user]
+```
+
+### Voice Label Guidelines
+
+**Format:** `Voice N — <model> (<source>) (<role>)`
+
+| Source | Label | Example |
+|:-------|:------|:--------|
+| CLI mode (claude/codex/agy) | `CLI:<tool>` | `Voice 1 — opus (CLI:claude -p) (Architect 🇨🇭)` |
+| Cloud delegate_task | `subagent:<model>` | `Voice 2 — glm-5.1:cloud (subagent:delegate_task) (Critic 🔍)` |
+| mixture_of_agents tool | `MOA:<model>` | `Voice 3 — claude-sonnet-4 (MOA:mixture_of_agents) (Strategist 📐)` |
+
+**Rule:** ต้องระบุ model name + ว่าได้ verdict นี้มาจาก CLI tool อะไร หรือ subagent model อะไร เสมอ — ห้ามตัด part model ออก
+
+**Example:**
+```
+### Voice 1 — gpt-5.5 (subagent:delegate_task) (Architect 🧠)
+TTL 15 นาทีถูกแล้ว + startup sweep + not on_session_end + fix path mismatch ก่อน
+
+### Voice 2 — claude-opus-4 (CLI:claude -p --model opus) (Critic 🔍)
+อย่าเพิ่ม complexity — TTL wall-clock เป็น deterministic safety net เพียงพอ
 ```
 
 ---
