@@ -1,0 +1,6 @@
+name: moa-gate
+version: 1.0.0
+description: "MOA (Multi-Model Adviser) write-tool gate. Blocks patch/write/git/terminal/process tools unless MOA council has approved via HMAC-signed state. Fail-closed. Append-only audit log with hash chain. Includes /moa-approve, /moa-revoke, /moa-status, /moa-log, /moa-verify slash commands."
+author: "Hermes (redesigned after 7-voice council review)"
+hooks:
+  - pre_tool_call
