@@ -40,34 +40,46 @@ def verify_content(content: str, file_path: str) -> dict:
             
             if rule_type == "deny_pattern":
                 pattern = rule.get("pattern", "")
-                if pattern and re.search(pattern, content, re.MULTILINE):
-                    violation = {
-                        "rule_id": rule["id"],
-                        "category": cat,
-                        "description": rule.get("description", ""),
-                        "suggestion": rule.get("suggestion", ""),
-                        "severity": severity,
-                    }
-                    if severity == "critical":
-                        critical_violations.append(violation)
-                    else:
-                        warning_violations.append(violation)
-            
+                if pattern:
+                    try:
+                        matched = re.search(pattern, content, re.MULTILINE)
+                    except re.error:
+                        logger.warning("bad regex rule %r: %s", rule.get("id", "?"), pattern[:80])
+                        matched = None
+                    if matched:
+                        violation = {
+                            "rule_id": rule["id"],
+                            "category": cat,
+                            "description": rule.get("description", ""),
+                            "suggestion": rule.get("suggestion", ""),
+                            "severity": severity,
+                        }
+                        if severity == "critical":
+                            critical_violations.append(violation)
+                        else:
+                            warning_violations.append(violation)
+
             elif rule_type == "require_pattern":
                 pattern = rule.get("pattern", "")
-                if pattern and not re.search(pattern, content, re.MULTILINE):
-                    violation = {
-                        "rule_id": rule["id"],
-                        "category": cat,
-                        "description": rule.get("description", ""),
-                        "suggestion": rule.get("suggestion", ""),
-                        "severity": severity,
-                    }
-                    if severity == "critical":
-                        critical_violations.append(violation)
-                    else:
-                        warning_violations.append(violation)
-    
+                if pattern:
+                    try:
+                        matched = re.search(pattern, content, re.MULTILINE)
+                    except re.error:
+                        logger.warning("bad regex rule %r: %s", rule.get("id", "?"), pattern[:80])
+                        matched = False
+                    if not matched:
+                        violation = {
+                            "rule_id": rule["id"],
+                            "category": cat,
+                            "description": rule.get("description", ""),
+                            "suggestion": rule.get("suggestion", ""),
+                            "severity": severity,
+                        }
+                        if severity == "critical":
+                            critical_violations.append(violation)
+                        else:
+                            warning_violations.append(violation)
+
     return {
         "critical": critical_violations,
         "warning": warning_violations,

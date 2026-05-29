@@ -24,3 +24,11 @@ moa_gate = "."
 
 [tool.setuptools.package-data]
 moa_gate = ["plugin.yaml"]
+
+[tool.pytest.ini_options]
+# Ignore root __init__.py (MOA-Gate plugin uses relative imports)
+# Only collect tests from tests/ directory
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+norecursedirs = [".git", ".venv", "__pycache__"]
+filterwarnings = ["ignore::DeprecationWarning"]

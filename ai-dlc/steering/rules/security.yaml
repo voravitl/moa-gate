@@ -17,71 +17,71 @@ rules:
   - id: SEC-001
     description: "ห้าม hardcode secret, password, API key ใน code"
     type: deny_pattern
-    pattern: "(?:password|secret|api[_-]?key|token|credential|auth_token)\s*[:=]\s*['\"][^'\"]{8,}"
+    pattern: '(?:password|secret|api[_-]?key|token|credential|auth_token)\s*[:=]\s*[''\"][^''\"]{8,}'
     severity: critical
     suggestion: "ใช้ environment variable หรือ AWS Secrets Manager / Vault"
-    path_patterns: [".*\.(py|rs|ts|js|go|java|rb|php|sh)$"]
+    path_patterns: ['.*\.(py|rs|ts|js|go|java|rb|php|sh)$']
     tags: [security, secrets]
 
   - id: SEC-002
     description: "ต้องมี input validation ทุก public endpoint"
     type: require_pattern
-    pattern: "@validate|validate_request|Validator|is_valid|sanitize|pydantic|serde::Deserialize"
+    pattern: '@validate|validate_request|Validator|is_valid|sanitize|pydantic|serde::Deserialize'
     severity: critical
     suggestion: "เพิ่ม input validation middleware หรือ decorator ก่อนรับ user input"
-    path_patterns: [".*\.(py|rs|ts)$"]
+    path_patterns: ['.*\.(py|rs|ts)$']
     tags: [security, input-validation]
 
   - id: SEC-003
     description: "ต้องมี authentication ทุก API endpoint ที่ sensitive"
     type: require_pattern
-    pattern: "@login_required|auth_required|authenticate|AuthMiddleware|Authorization|JWT|Bearer|middleware"
+    pattern: '@login_required|auth_required|authenticate|AuthMiddleware|Authorization|JWT|Bearer|middleware'
     severity: critical
     suggestion: "เพิ่ม auth middleware หรือ decorator ก่อนเขียน endpoint"
-    path_patterns: [".*/(routes?|api|endpoint|controller|handler)/.*\.(py|rs|ts)$"]
+    path_patterns: ['.*/(routes?|api|endpoint|controller|handler)/.*\.(py|rs|ts)$']
     tags: [security, auth]
 
   - id: SEC-004
     description: "ห้ามใช้ eval() หรือ exec() หรือ eval-like functions"
     type: deny_pattern
-    pattern: "\beval\(|\bexec\(|\b__import__\(|\bcompile\(|subprocess\.(call|run|Popen|check_output)"
+    pattern: '\beval\(|\bexec\(|\b__import__\(|\bcompile\(|subprocess\.(call|run|Popen|check_output)'
     severity: critical
     suggestion: "ใช้ safer alternatives — ast.literal_eval, subprocess.run(list_of_args)"
-    path_patterns: [".*\.py$"]
+    path_patterns: ['.*\.py$']
     tags: [security, code-injection]
 
   - id: SEC-005
     description: "SQL queries ต้อง use parameterized queries, not string interpolation"
     type: deny_pattern
-    pattern: "(?:execute|query|raw|run)\s*\(\s*['\"](?:SELECT|INSERT|UPDATE|DELETE).*\{.*\}"
+    pattern: '(?:execute|query|raw|run)\s*\(\s*[''\"](?:SELECT|INSERT|UPDATE|DELETE).*\{.*\}'
     severity: critical
     suggestion: "ใช้ parameterized queries เสมอ — sqlx::query!, ? placeholders"
-    path_patterns: [".*\.(py|rs|ts|go|java)$"]
+    path_patterns: ['.*\.(py|rs|ts|go|java)$']
     tags: [security, sql-injection]
 
   - id: SEC-006
     description: "CORS ต้องไม่ใช่ wildcard ('*') ใน production"
     type: deny_pattern
-    pattern: "Access-Control-Allow-Origin\s*[:=]\s*['\"]\*['\"]"
+    pattern: 'Access-Control-Allow-Origin\s*[:=]\s*[''\"]\*[''\"]'
     severity: warning
     suggestion: "ใช้ specific origin หรือ list of origins แทน *"
-    path_patterns: [".*\.(py|rs|ts)$"]
+    path_patterns: ['.*\.(py|rs|ts)$']
     tags: [security, cors]
 
   - id: SEC-007
     description: "ต้องมี rate limiting ใน production endpoints"
     type: require_pattern
-    pattern: "ratelimit|RateLimit|throttle|Throttling|too_many_requests"
+    pattern: 'ratelimit|RateLimit|throttle|Throttling|too_many_requests'
     severity: warning
     suggestion: "เพิ่ม rate limiting middleware (e.g., slowapi, tower_governor)"
-    path_patterns: [".*\.(py|rs)$"]
+    path_patterns: ['.*\.(py|rs)$']
     tags: [security, rate-limit]
 
   - id: SEC-008
     description: "ห้าม disable CSRF protection (ยกเว้น intentional)"
     type: deny_pattern
-    pattern: "csrf_exempt|@csrf\.exempt|CSRFProtect\(False\)"
+    pattern: 'csrf_exempt|@csrf\.exempt|CSRFProtect\(False\)'
     severity: critical
     suggestion: "อย่า disable CSRF เว้นแต่มีเหตุผลชัดเจน + documented"
-    path_patterns: [".*\.py$"]
+    path_patterns: ['.*\.py$']
     tags: [security, csrf]

@@ -57,6 +57,23 @@ HMAC_HEX_LEN = 64  # SHA-256 hex
 DEFAULT_TTL_SECONDS = 15 * 60   # 15 minutes
 MAX_TTL_SECONDS = 60 * 60       # 60 minutes
 
+# Session GC
+MAX_SESSION_AGE_SECONDS = 3600  # 1 hour — stale per-session state files
+
+
+def _safe_session_id(session_id: str) -> str:
+    """Return a filesystem-safe session id for per-session state files."""
+    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in (session_id or ""))
+    return safe[:160]
+
+
+def state_file_for_session(session_id: str = "") -> Path:
+    """Return the signed state file for a session. Empty keeps legacy global path."""
+    safe = _safe_session_id(session_id)
+    if not safe:
+        return STATE_FILE
+    return STATE_DIR / "sessions" / f"{safe}.json"
+
 
 # ---------------------------------------------------------------------------
 # Key management
@@ -200,14 +217,14 @@ def default_state() -> Dict[str, Any]:
     }
 
 
-def read() -> Dict[str, Any]:
+def read(session_id: str = "") -> Dict[str, Any]:
     """Read and verify state file. Returns default_state() if missing/invalid.
 
     Checks TTL expiry: if approved but expired, auto-revoke.
     Backward compat: old state without expires_at (LYN format) gets a
     computed expiry injected AFTER HMAC verification.
     """
-    path = STATE_FILE
+    path = state_file_for_session(session_id)
     if not path.exists():
         return default_state()
 
@@ -318,12 +335,14 @@ def write(status: str, approved_by: list, reason: str,
         data["hmac"] = sign(data)
 
         # Atomic write
-        fd, tmp_path = tempfile.mkstemp(dir=str(STATE_DIR), prefix=".state_tmp_", suffix=".json")
+        target = state_file_for_session(session_id)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=str(target.parent), prefix=".state_tmp_", suffix=".json")
         try:
             with os.fdopen(fd, "w") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
-            os.replace(tmp_path, str(STATE_FILE))
-            STATE_FILE.chmod(0o600)
+            os.replace(tmp_path, str(target))
+            target.chmod(0o600)
         except Exception:
             try:
                 os.unlink(tmp_path)
@@ -339,7 +358,7 @@ def approve(approved_by: list, reason: str, session_id: str = "",
     """Approve the gate with TTL (manual approval)."""
     write("approved", approved_by, reason, session_id,
           ttl_seconds=ttl_seconds, trigger="manual", **kwargs)
-    return read()
+    return read(session_id)
 
 
 def approve_auto(approved_by: list, reason: str, session_id: str = "",
@@ -367,35 +386,36 @@ def approve_auto(approved_by: list, reason: str, session_id: str = "",
           cool_down_until=cool_down_until,
           trigger="auto_majority",
           council_config_hash=council_config_hash)
-    return read()
+    return read(session_id)
 
 
-def override_cooldown(override_by: str = "human") -> Dict[str, Any]:
+def override_cooldown(override_by: str = "human", session_id: str = "") -> Dict[str, Any]:
     """Override cool-down period — execute immediately.
 
     Reads current state, clears cool_down_until, sets override_by.
     """
-    data = read()
+    data = read(session_id)
     if not data.get("cool_down_until"):
         return data  # No cooldown active, nothing to do
     data["cool_down_until"] = None
     data["override_by"] = override_by
     data["hmac"] = sign(data)
     # Use write fields reconstruction
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=str(STATE_DIR), prefix=".state_tmp_", suffix=".json")
+    target = state_file_for_session(session_id)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=str(target.parent), prefix=".state_tmp_", suffix=".json")
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, str(STATE_FILE))
-        STATE_FILE.chmod(0o600)
+        os.replace(tmp_path, str(target))
+        target.chmod(0o600)
     except Exception:
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
         raise
-    return read()
+    return read(session_id)
 
 
 def is_in_cooldown(data: Dict[str, Any]) -> bool:
@@ -414,10 +434,42 @@ def is_in_cooldown(data: Dict[str, Any]) -> bool:
         return False
 
 
-def revoke(reason: str = "", trigger: str = "manual") -> Dict[str, Any]:
-    """Revoke the gate. trigger: 'manual' | 'ttl_expired' | 'session_end'."""
-    write("pending", [], reason or f"Revoked ({trigger})")
-    return read()
+def revoke(reason: str = "", trigger: str = "manual", session_id: str = "") -> Dict[str, Any]:
+    """Revoke the gate for one session. Empty session_id keeps legacy global state."""
+    write("pending", [], reason or f"Revoked ({trigger})", session_id=session_id)
+    return read(session_id)
+
+
+# ---------------------------------------------------------------------------
+# Session GC — cleanup stale per-session state files
+# ---------------------------------------------------------------------------
+
+def gc_stale_sessions(max_age: int = MAX_SESSION_AGE_SECONDS) -> int:
+    """Remove session state files older than `max_age` seconds.
+    
+    Returns count of removed files. Skips sessions/ dir itself.
+    """
+    sessions_dir = STATE_DIR / "sessions"
+    if not sessions_dir.is_dir():
+        return 0
+    
+    now = datetime.now(timezone.utc).timestamp()
+    removed = 0
+    for f in sessions_dir.iterdir():
+        if not f.is_file() or not f.name.endswith(".json"):
+            continue
+        try:
+            age = now - f.stat().st_mtime
+            if age > max_age:
+                f.unlink()
+                removed += 1
+                logger.debug("GC: removed stale session file %s (age=%.0fs)", f.name, age)
+        except OSError as exc:
+            logger.warning("GC: failed to remove %s: %s", f.name, exc)
+            continue
+    if removed:
+        logger.info("GC: removed %d stale session file(s)", removed)
+    return removed
 
 
 # ---------------------------------------------------------------------------

@@ -61,7 +61,7 @@ rules:
 
 | Severity | Action |
 |----------|--------|
-| `critical` | Block + suggest fix + escalate to MOA-Gate Tier 2 |
+| `critical` | Block + suggest fix |
 | `warning` | Warn but allow (education only) |
 
 ## Phase Engine
@@ -80,7 +80,7 @@ Promote: `python3 -c "from engine.phase import promote_phase; print(promote_phas
 
 | Event | Action |
 |-------|--------|
-| Steering critical violation | Auto-escalate to MOA-Gate Tier 2 |
+| Steering critical violation | Block with violation details |
 | MOA-Gate approved | Phase promote check |
 | Shared state | ~/.hermes/ai-dlc/ (file-based, no RPC) |
 
