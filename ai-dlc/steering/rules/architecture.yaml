@@ -1,0 +1,50 @@
+# AI-DLC Compass — Architecture Steering Rules
+
+version: "1.0"
+scope: all-microservices
+rules:
+
+  - id: ARCH-001
+    description: "ต้องมี type hints / type annotations สำหรับทุก public interface"
+    type: require_pattern
+    pattern: "def.*\(.*:.*\).*->|fn.*\(.*:.*\).*->|public.*\w+\s+\w+\("
+    severity: warning
+    suggestion: "เพิ่ม type annotations/strict types ให้ public function/method ทุกตัว"
+    path_patterns: [".*\.(py|rs|ts)$"]
+    tags: [architecture, types]
+
+  - id: ARCH-002
+    description: "ต้องมี error handling — ห้าม unwrap/expect โดยไม่ให้ context"
+    type: deny_pattern
+    pattern: "\.unwrap\(\)|\.expect\(""\)|\.expect\(''\)"
+    severity: warning
+    suggestion: "ใช้ proper error handling — Result/Option pattern, custom error types"
+    path_patterns: [".*\.rs$"]
+    tags: [architecture, error-handling]
+
+  - id: ARCH-003
+    description: "ต้องไม่ import wildcard (*) — explicit imports only"
+    type: deny_pattern
+    pattern: "^from\s+\w+\s+import\s+\*"
+    severity: warning
+    suggestion: "import เฉพาะสิ่งที่จำเป็น — from module import Thing"
+    path_patterns: [".*\.py$"]
+    tags: [architecture, imports]
+
+  - id: ARCH-004
+    description: "Public API functions ต้องมี docstring/documentation"
+    type: require_pattern
+    pattern: """"|///|/**|#\s+\[doc\]"
+    severity: warning
+    suggestion: "เพิ่ม docstring อธิบาย purpose, args, return values"
+    path_patterns: [".*/api/.*\.(py|rs|ts)$"]
+    tags: [architecture, documentation]
+
+  - id: ARCH-005
+    description: "Functions ควรมีความยาวไม่เกิน 60 lines"
+    type: heuristic
+    max_lines: 60
+    severity: warning
+    suggestion: "แตก function ยาวเป็น functions ย่อย — Single Responsibility"
+    path_patterns: [".*\.(py|rs|ts|go|java)$"]
+    tags: [architecture, maintainability]

@@ -1,0 +1,33 @@
+# AI-DLC Compass — Compliance Steering Rules
+# Regulatory compliance for Thai financial services.
+
+version: "1.0"
+scope: banking-microservices
+rules:
+
+  - id: COMP-001
+    description: "API endpoints ต้องมี audit logging — who, what, when"
+    type: require_pattern
+    pattern: "audit|audit_log|AuditLogger|log_request|request_log"
+    severity: critical
+    suggestion: "เพิ่ม audit logging middleware — log user_id, action, timestamp, resource"
+    path_patterns: [".*/(routes?|api|endpoint)/.*\.(py|rs|ts)$"]
+    tags: [compliance, audit]
+
+  - id: COMP-002
+    description: "ต้องไม่ log PII หรือ sensitive data"
+    type: deny_pattern
+    pattern: "logging\.(info|debug|warning)\(.*(?:email|phone|ssn|citizen_id|credit_card|account_no)"
+    severity: critical
+    suggestion: "mask PII data ก่อน log — ใช้ log.data_masking() หรือ custom formatter"
+    path_patterns: [".*\.py$"]
+    tags: [compliance, pii, pdpd]
+
+  - id: COMP-003
+    description: "ต้องมี input sanitization สำหรับ user-supplied data"
+    type: require_pattern
+    pattern: "sanitize|clean|escape|validate|strip_tags|bleach|html\.escape"
+    severity: warning
+    suggestion: "sanitize user input ก่อน store หรือ display"
+    path_patterns: [".*/input/.*\.py$"]
+    tags: [compliance, xss]
