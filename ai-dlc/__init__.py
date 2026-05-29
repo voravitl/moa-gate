@@ -104,6 +104,8 @@ def _can_escalate_to_moa(severity: str, tier: int) -> bool:
 
 def register():
     """Register plugin hooks with Hermes."""
+    # Auto-load steering on startup to avoid first-tool block
+    _mark_steering_loaded()
     logger.info("ai-dlc-compass: registered")
 
 def pre_tool_call(tool_name: str, args: dict) -> Optional[dict]:
@@ -119,7 +121,7 @@ def pre_tool_call(tool_name: str, args: dict) -> Optional[dict]:
     logger.info(f"ai-dlc-compass: checking {tool_name}")
 
     # --- Step 1: First-tool check — steering loaded? ---
-    path_arg = args.get("path", args.get("file", args.get("command", "")))
+    path_arg = args.get("path", args.get("file", ""))
     content_arg = args.get("content", args.get("text", ""))
 
     if not _steering_loaded():
@@ -152,6 +154,19 @@ def pre_tool_call(tool_name: str, args: dict) -> Optional[dict]:
                     "  /ai-dlc guide         (for guidance)"
                 ),
             }
+
+    # --- Step 2.5: Extract payload from tool-specific args ---
+    if not content_arg:
+        if tool_name == "patch":
+            content_arg = args.get("new_string", "")
+        elif tool_name == "terminal":
+            content_arg = args.get("command", "")
+        elif tool_name == "process":
+            content_arg = args.get("data", "")
+    # For terminal/process without a real file path, use a path hint
+    if not path_arg and content_arg:
+        path_arg = f"/tmp/{tool_name}-payload.sh"
+    logger.debug(f"ai-dlc-compass: scanning {tool_name}: path={path_arg}, content_len={len(content_arg)}")
 
     # --- Step 3: Verify content against steering rules ---
     if content_arg:
@@ -208,7 +223,7 @@ def _handle_violations(violations: dict, path: str, content: str) -> dict:
     # Escalate critical to MOA-Gate if available
     if critical and _can_escalate_to_moa("critical", 2):
         msg_parts.append(
-            "\n\U0001f534 Auto-escalated to MOA-Gate Tier 2\n"
+            "\n\U0001f534 Auto-escalated to MOA-Gate critical\n"
             "  Run /moa-approve --by critic,skeptic --reason \"<reason>\""
         )
 

@@ -18,6 +18,23 @@ set -euo pipefail
 #   5. Show next steps
 # ============================================================================
 
+# Detect: are we running under bash <(curl ...) or not?
+SCRIPT_PATH="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/$(basename "$0" 2>/dev/null)"
+if [ ! -f "$SCRIPT_PATH" ]; then
+  cat <<'EOF'
+
+ERROR: This installer cannot run under "bash <(curl ...)" because $0
+resolves to a temporary file descriptor, and we need a real filesystem
+path to locate the ai-dlc plugin files.
+
+Please clone the repo and run from the checkout:
+  git clone https://github.com/voravitl/moa-gate.git
+  cd moa-gate
+  bash ai-dlc/scripts/install.sh
+EOF
+  exit 1
+fi
+
 REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 PLUGIN_SRC="$REPO_DIR/ai-dlc"
 PLUGIN_LINK="$HOME/.hermes/plugins/ai-dlc"
@@ -93,6 +110,6 @@ echo "  3. /ai-dlc phase            (check phase)"
 echo ""
 echo "Integration:"
 echo "  - Works alongside MOA-Gate at ~/.hermes/plugins/moa-gate/"
-echo "  - Steering violations auto-escalate to MOA-Gate Tier 2"
+echo "  - Steering violations are blocked with violation details"
 echo "  - Shared state: $STATE_DIR/"
 echo ""

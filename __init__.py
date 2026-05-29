@@ -18,14 +18,29 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import state as st
-from . import audit as au
-from . import tier as ti
+# Ensure plugin directory is on sys.path for sibling module imports
+# (Hermes may not always add it; needed for "import state" to work)
+_PLUGIN_DIR = str(Path(__file__).resolve().parent)
+_added_plugin_path = False
+if _PLUGIN_DIR not in sys.path:
+    sys.path.insert(0, _PLUGIN_DIR)
+    _added_plugin_path = True
+
+try:
+    import state as st
+    import audit as au
+    import tier as ti
+finally:
+    # Clean up to avoid namespace pollution
+    if _added_plugin_path:
+        sys.path.remove(_PLUGIN_DIR)
+del _PLUGIN_DIR, _added_plugin_path
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +189,8 @@ def _on_pre_tool_call(
     if not tool_name:
         return None
 
+    session_id = session_id or os.environ.get("HERMES_SESSION_ID", "") or f"anon-{os.getpid():d}"
+
     # Check if tool is in blocked list
     if tool_name not in BLOCKED_TOOLS:
         return None
@@ -184,8 +201,8 @@ def _on_pre_tool_call(
         if isinstance(cmd, str) and TERMINAL_READONLY_PATTERNS.match(cmd):
             return None
 
-    # Read state
-    state = st.read()
+    # Read per-session state
+    state = st.read(session_id)
     status = state.get("status", "pending")
 
     if status == "approved":
@@ -502,7 +519,8 @@ def _handle_override(raw_args: str) -> str:
         reason = reason_match.group(1) or reason_match.group(2) or ""
 
     try:
-        state = st.override_cooldown(override_by="human")
+        session_id = os.environ.get("HERMES_SESSION_ID", "") or f"anon-{os.getpid():d}"
+        state = st.override_cooldown(override_by="human", session_id=session_id)
         if not state.get("cool_down_until"):
             # Cool-down cleared
             au.log("override", reason=reason or "Cooldown overridden by human",
@@ -521,8 +539,9 @@ def _handle_revoke(raw_args: str) -> str:
     reason = raw_args.strip() or "Session complete"
     try:
         revoke_reason = raw_args.strip() if raw_args.strip() else reason
-        st.revoke(revoke_reason)
-        au.log("revoke", reason=revoke_reason)
+        session_id = os.environ.get("HERMES_SESSION_ID", "") or f"anon-{os.getpid():d}"
+        st.revoke(revoke_reason, session_id=session_id)
+        au.log("revoke", reason=revoke_reason, session_id=session_id)
         return "🔄 MOA Gate REVOKED — reset to pending. Run `/moa-approve` when ready."
     except Exception as exc:
         return f"❌ Revoke failed: {exc}"
@@ -531,7 +550,8 @@ def _handle_revoke(raw_args: str) -> str:
 def _handle_status(raw_args: str) -> str:
     """Show current gate state."""
     try:
-        data = st.read()
+        session_id = os.environ.get("HERMES_SESSION_ID", "") or f"anon-{os.getpid():d}"
+        data = st.read(session_id)
         return st.format_status(data)
     except Exception as exc:
         return f"❌ Status error: {exc}"
@@ -607,9 +627,26 @@ def _on_session_end(*, session_id: str = "", completed: bool = False,
     Uninterruptible signals (kill -9, crash) require TTL-only recovery.
     """
     try:
-        data = st.read()
+        data = st.read(session_id)
         if data.get("status") == "approved":
-            st.revoke(f"Session ended (completed={completed}, interrupted={interrupted})")
+            approved_session = data.get("session_id", "")
+            if not session_id:
+                au.log("skip_revoke", by=["system"],
+                       reason="session_end_without_session_id",
+                       session_id=session_id)
+                logger.info("MOA Gate: skip auto-revoke — missing session_id")
+                return
+            if approved_session and approved_session != session_id:
+                au.log("skip_revoke_session_mismatch", by=["system"],
+                       reason=f"approved_session={approved_session}",
+                       session_id=session_id)
+                logger.info(
+                    "MOA Gate: skip auto-revoke — ended session %s != approved session %s",
+                    session_id,
+                    approved_session,
+                )
+                return
+            st.revoke(f"Session ended (completed={completed}, interrupted={interrupted})", session_id=session_id)
             au.log("revoke", by=["system"],
                    reason=f"session_end_completed={completed}_interrupted={interrupted}",
                    session_id=session_id)
@@ -624,11 +661,21 @@ def _on_session_end(*, session_id: str = "", completed: bool = False,
 # ---------------------------------------------------------------------------
 
 def register(ctx) -> None:
+    """Register MOA Gate hooks.
+
+    Called once when Hermes loads the plugin.
+    Sets up pre_tool_call and on_session_end hooks.
+    Cleans stale per-session state files on startup.
+    """
+    # Startup GC: clear stale per-session state files
+    st.gc_stale_sessions()
+
     ctx.register_hook("pre_tool_call", _on_pre_tool_call)
 
     # P1: Startup sweep — auto-expire state if TTL passed
-    # st.read() checks expires_at and returns pending if expired
-    st.read()
+    # st.read(session_id) checks expires_at and returns pending if expired
+    session_id = os.environ.get("HERMES_SESSION_ID", "") or f"anon-{os.getpid():d}"
+    st.read(session_id)
 
     ctx.register_command(
         "moa-approve",
