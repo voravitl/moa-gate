@@ -1,172 +1,178 @@
-# MOA Gate — Hermes Plugin + Skill
+# MOA Gate + AI-DLC Compass — Hermes Plugin + Skill
 
-Multi-Model Adviser (MOA) enforcement gate for Hermes Agent.  
-Controls write/destructive tool access based on council approval.
+Multi-Model Adviser (MOA) enforcement gate + AI-Driven Development Lifecycle Compass for Hermes Agent.
 
 รวม 2 component ใน repo เดียว:
 
 | Component | Path | หน้าที่ |
 |-----------|------|--------|
-| **Plugin** `moa-gate` | `plugin/` | 🔒 Block/unblock tools, signed state, audit log |
-| **Skill** `moa-adviser` | `skill/` | 🧠 เรียก 5-voice council เพื่อตัดสินใจ |
+| **MOA-Gate Plugin** | `__init__.py` + `state.py` + `audit.py` + `tier.py` | 🔒 Block/unblock write tools, HMAC-signed state, audit log |
+| **AI-DLC Compass Plugin** | `ai-dlc/` | 🧭 Development lifecycle phase + steering rules compliance |
+| **Skill** `moa-adviser` | `skill/SKILL.md` | 🧠 เรียก multi-model council เพื่อตัดสินใจ |
+
+---
 
 ## Architecture
 
 ```
-User wants to make changes
-        │
-        ▼
-┌─ moa-adviser (skill) ───────────────────────┐
-│  /moa-adviser --voices 5                     │
-│  → 5 models (claude, codex, agy, ollama...)  │
-│  → approve / dissent / reason                │
-└──────────────────────┬──────────────────────┘
-                       │ council result
-                       ▼
-┌─ moa-council-complete ───────────────────────┐
-│  /moa-council-complete '{"votes":...}'        │
-│  → Auto-approve if ≥80% + Tier 1             │
-│  → Weighted veto (Critic/Skeptic = T2)       │
-└──────────────────────┬──────────────────────┘
-                       │
-                       ▼
-┌─ moa-gate (plugin) ──────────────────────────┐
-│  1. State: HMAC-SHA256 signed                │
-│  2. Audit: hash-chain log                    │
-│  3. Cool-down / shadow / rate limit          │
-│  4. pre_tool_call → allow block              │
-└──────────────────────┬──────────────────────┘
-                       │
-                       ▼
-              Write tools ผ่าน ✅ / ถูกบล็อก 🛑
+User wants to write code
+         │
+         ▼
+┌─ AI-DLC Compass (ai-dlc/) ─────────┐
+│  Phase check?                       │
+│  Steering compliance?               │
+│  Content scan?                      │
+└──────────┬─────────────────────────┘
+           │ allowed
+           ▼
+┌─ MOA Gate (root __init__.py) ──────┐
+│  Council approved?  →  approve     │
+│  Pending?           →  block       │
+│  Cool-down active?  →  block       │
+│  Session mismatch?  →  block       │
+└──────────────────┬─────────────────┘
+                   │
+                   ▼
+         Write tool executes ✅
 ```
+
+---
 
 ## Files
 
-### Plugin (`plugin/`)
+### MOA Gate (root `moa-gate/`)
 
 | File | Purpose |
 |------|---------|
-| `state.py` | HMAC-SHA256 signed state + TTL + auto-approve |
+| `__init__.py` | Plugin entry + pre_tool_call hook + slash commands |
+| `state.py` | HMAC-SHA256 signed state + TTL + auto-approve + session GC |
 | `audit.py` | Append-only audit log with SHA-256 hash chain |
 | `tier.py` | Tier classification (T1 auto / T2 manual) |
-| `__init__.py` | Plugin hook + slash commands |
 | `plugin.yaml` | Hermes plugin manifest |
+| `pyproject.toml` | Project config (Python deps) |
 
-### Skill (`skill/`)
+### AI-DLC (`ai-dlc/`)
 
 | File | Purpose |
 |------|---------|
-| `SKILL.md` | MOA Adviser Council setup + CLI/Cloud mode |
-| `references/` | Docs for plugin integration, recovery, design |
+| `ai-dlc/__init__.py` | Plugin entry + pre_tool_call hook |
+| `ai-dlc/engine/phase.py` | Phase state machine (INCEPTION → CONSTRUCTION → OPERATION) |
+| `ai-dlc/engine/verifier.py` | Content scanner — match/require/deny patterns |
+| `ai-dlc/steering/registry.py` | Load YAML rules from `~/wiki/steering/` |
+| `ai-dlc/steering/rules/security.yaml` | 8 security rules |
+| `ai-dlc/steering/rules/architecture.yaml` | 5 architecture rules |
+| `ai-dlc/steering/rules/compliance.yaml` | 3 compliance rules |
+| `ai-dlc/plugin.yaml` | Hermes plugin manifest |
+
+### Documentation
+
+| File | Purpose |
+|------|---------|
+| `docs/USER_GUIDE.md` | คู่มือผู้ใช้ฉบับเต็ม |
+| `docs/COMMANDS.md` | Slash command reference |
+| `README.md` | เอกสารนี้ |
+| `skill/SKILL.md` | MOA Adviser Council setup + CLI/Cloud mode |
+| `skill/references/` | Technical reference docs |
+
+### Tests
+
+| File | Purpose |
+|------|---------|
+| `tests/test_ai_dlc_compass.py` | 9 AI-DLC integration tests |
+
+---
 
 ## Installation
 
-### AI-friendly (one-shot)
-
-AI agent ใช้คำสั่งนี้ได้เลย — clone, skill, hook, key ทำทั้งหมด:
+### One-shot (AI-friendly)
 
 ```bash
 bash <(curl -sL https://raw.githubusercontent.com/voravitl/moa-gate/main/scripts/install.sh)
 ```
 
-### Manual (clone)
+### Manual
 
 ```bash
-# One-liner:
-git clone git@github.com:voravitl/moa-gate.git ~/.hermes/plugins/moa-gate && \
-  ln -sf ~/.hermes/plugins/moa-gate/skill ~/.hermes/skills/devops/moa-adviser
+# Clone
+git clone git@github.com:voravitl/moa-gate.git ~/.hermes/plugins/moa-gate
 
-# Or with Makefile:
-git clone git@github.com:voravitl/moa-gate.git && cd moa-gate && make install
+# Skill
+ln -sf ~/.hermes/plugins/moa-gate/skill ~/.hermes/skills/devops/moa-adviser
+
+# AI-DLC plugin
+ln -sf ~/.hermes/plugins/moa-gate/ai-dlc ~/.hermes/plugins/ai-dlc
+
+# Steering rules
+mkdir -p ~/wiki/steering
+cp ~/.hermes/plugins/ai-dlc/steering/rules/*.yaml ~/wiki/steering/
+
+# State directory
+mkdir -p ~/.hermes/moa-gate/sessions
+mkdir -p ~/.hermes/ai-dlc
 ```
 
-### Pre-commit hook (optional)
+---
+
+## Quick Start
+
+### 1. ตรวจสอบว่าทำงาน
 
 ```bash
-make install-hook
-# หรือ: git config --global core.hooksPath ~/.hermes/moa-gate/
+cd ~/moa-gate
+python3 -m pytest tests/ -v
+# ควรได้ 9/9 PASS
 ```
 
-## Slash Commands
-
-| Command | Description |
-|---------|-------------|
-| `/moa-status` | Show gate state (mode, tier, dissent, cool-down) |
-| `/moa-approve --by voices --reason "..."` | Manual approval |
-| `/moa-approve --override --reason "..."` | Bypass cool-down |
-| `/moa-council-complete '<json>'` | Submit council results for auto-approve |
-| `/moa-revoke` | Reset to pending |
-| `/moa-log [N]` | Show audit log |
-| `/moa-verify` | Verify audit chain integrity |
-
-## Auto-Approve Flow
+### 2. Slash commands
 
 ```
-/moa-council-complete '{
-  "votes": {"architect":"approve","critic":"dissent",...},
-  "task_description": "fix auth",
-  "changed_paths": ["src/auth.rs"]
-}'
-
-1. Check ≥80% threshold (4/5)
-2. Check weighted veto (Critic/Skeptic dissent → Tier 2)
-3. Classify tier (keyword + vote → conservative merge)
-4. Check rate limit
-5. Check shadow mode
-6. Auto-approve + cool-down period
-7. Create GH issue for dissent
+/moa-gate status          → ดูสถานะ
+/moa-gate council-complete  → ส่งผล council
+/moa-approve                → อนุมัติ write tools
+/moa-revoke                 → ยกเลิกอนุมัติ
+/moa-log                    → ดู audit log
+/moa-verify                 → ตรวจ state
 ```
 
-## Configuration (via env)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MOA_GATE_AUTO_THRESHOLD` | `0.8` | Auto-approve threshold (80%) |
-| `MOA_GATE_COOLDOWN_SECS` | `120` | Cool-down period in seconds |
-| `MOA_GATE_AUTO_RATE_LIMIT` | `5` | Max auto-approves per hour |
-| `MOA_GATE_SHADOW_MODE` | `0` | Set to `1` for record-only mode |
-
-## Security
-
-- **HMAC-SHA256**: State file signed with key from `~/.hermes/.env`
-- **Hash chain**: Every audit log entry linked to previous via SHA-256
-- **Fail-closed**: Any error → block write tools
-- **Session isolation**: Cross-session approval rejected
-- **Atomic writes**: `tempfile` + `os.replace` (no partial writes)
-- **Weighted veto**: Critic/Skeptic dissent forces manual approval
-- **TTL expiry**: Default 15 min — state auto-expires
-- **P1 — Startup sweep**: Plugin checks & expires stale state on load
-- **P2 — Session end**: Auto-revoke when Hermes session ends
-- **P0 — Git pre-commit hook**: Worldwide git hook enforcing gate at OS level
-
-## Requirements
-
-- Hermes Agent (Python 3.10+)
-- `fcntl` (Unix/macOS — not Windows-compatible)
-
-## License
-
-MIT
-
-## AI-DLC Compass
-
-| Component | Path | หน้าที่ |
-|-----------|------|--------|
-| **Plugin** `ai-dlc-compass` | `ai-dlc/` | 🧭 Steering rules + phase engine + policy verification |
-
-ติดตั้งคู่กับ MOA-Gate:
+### 3. เริ่มเขียน code
 
 ```bash
-# Install both
-bash scripts/install.sh          # MOA-Gate
-bash ai-dlc/scripts/install.sh   # AI-DLC Compass
+# Step 1: รัน council
+/moa-adviser --voices 5
+
+# Step 2: ส่งผล (auto-approve ถ้า ≥80%)
+/moa-council-complete '{"votes":{...}}'
+
+# Step 3: เขียน code ได้เลย 🎯
 ```
 
-หรือ install แยก:
+ดูเพิ่มเติม: [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | [docs/COMMANDS.md](docs/COMMANDS.md)
+
+---
+
+## Development
 
 ```bash
-cd moa-gate && bash ai-dlc/scripts/install.sh
+# Test
+python3 -m pytest tests/ -v
+
+# Build
+python3 -m py_compile __init__.py && echo "✅ OK"
 ```
 
-See `ai-dlc/README.md` for full docs.
+### CI (GitHub Actions)
+
+| Job | What it does |
+|-----|-------------|
+| `lint` | Python lint + type check |
+| `test` | Python tests (9 AI-DLC tests) |
+| `moa-gate` | MOA quorum verification |
+
+---
+
+## See Also
+
+- [docs/USER_GUIDE.md](docs/USER_GUIDE.md) — คู่มือผู้ใช้ฉบับเต็ม
+- [docs/COMMANDS.md](docs/COMMANDS.md) — Slash command reference
+- [skill/SKILL.md](skill/SKILL.md) — MOA Adviser setup
+- [ai-dlc/README.md](ai-dlc/README.md) — AI-DLC details
