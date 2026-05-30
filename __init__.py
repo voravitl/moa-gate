@@ -46,20 +46,93 @@ BLOCKED_TOOLS = frozenset({
 })
 
 # Read-only terminal commands allowed even when gate is pending
-TERMINAL_READONLY_PATTERNS = re.compile(
-    r"^\s*(?:"
-    # git read-only subcommands
-    r"git\s+(?:log|diff|status|show|branch|blame|shortlog|rev-parse|describe|ls-files|ls-tree|remote|config|tag\s+-l|tag\s+--list|stash\s+list)\s*(?!.*[|;&>])"
-    # safe read-only commands
-    r"|(?:ls|cat|head|tail|which|echo|env|pwd|find|grep|rg|file|wc|sort|uniq|cut|date|cal|df|du|ps|top)\s+(?!.*[|;&>])"
-    r"|(?:ls|cat|head|tail|which|echo|env|pwd|df|du|ps|top|date|cal)\s*$"
-    # build/test tools
-    r"|(?:cargo\s+(?:check|test|build|fmt|clippy|doc)|npm\s+(?:test|run|ls)|pytest|python3?\s+-m\s+(?:pytest|unittest)|make)\s*(?!.*[|;&>])"
-    # AI review (safe)
-    r"|claude\s+-p\s+"
-    r")",
-    re.IGNORECASE,
+# Uses argv-based parsing (shlex) — NOT regex — to prevent command
+# injection via $(), backtick, newline, or chaining operators.
+# NOTE: Commands that can execute arbitrary code (python3, npm, cargo,
+# make, claude -p) are intentionally NOT whitelisted.
+_READONLY_COMMANDS = frozenset({
+    "ls", "head", "tail", "which", "pwd", "file", "wc",
+    "cut", "grep", "rg", "diff", "df", "du", "ps", "top",
+    "date", "cal", "echo",
+    # git - restricted to read-only subcommands
+    "git",
+})
+
+# Git subcommands allowed (everything else git is blocked)
+_GIT_READONLY = frozenset({
+    "log", "diff", "status", "show", "blame", "shortlog",
+    "rev-parse", "describe", "ls-files", "ls-tree",
+    "branch", "remote", "stash",
+})
+
+# All shell metacharacters that can chain/redirect commands
+_BLOCKED_CMD_PATTERNS = re.compile(
+    r'[$][(]|[`]|[|]|[&]|[<>]|[;]|\n'
 )
+
+def _is_readonly_command(cmd: str) -> bool:
+    """Check if a terminal command is read-only via argv parsing.
+
+    Uses shlex.split to parse the real argv, then checks:
+    1. Base command is in _READONLY_COMMANDS
+    2. No shell operators (blocked by _BLOCKED_CMD_PATTERNS)
+    3. For git: subcommand is in _GIT_READONLY
+
+    This prevents bypass via:
+    - Command substitution: echo $(rm -rf /) → blocked by _BLOCKED_CMD_PATTERNS
+    - Newline injection: ls\nrm...        → blocked by _BLOCKED_CMD_PATTERNS
+    - Pipe/redirect: echo x > ~/.hermes/.env → blocked by _BLOCKED_CMD_PATTERNS
+    - python3 -c "import os; os.system(...)" → blocked (python3 not whitelisted)
+    - git config --global alias.exec      → blocked (_GIT_READONLY no config)
+    """
+    if not cmd or not isinstance(cmd, str):
+        return False
+
+    # Block shell metacharacters
+    if _BLOCKED_CMD_PATTERNS.search(cmd):
+        return False
+
+    try:
+        import shlex
+        argv = shlex.split(cmd)
+    except (ValueError, OSError):
+        return False
+
+    if not argv:
+        return False
+
+    base_cmd = argv[0].lower()
+
+    if base_cmd not in _READONLY_COMMANDS:
+        return False
+
+    # Git: only allow explicit read-only subcommands
+    if base_cmd == "git":
+        if len(argv) < 2:
+            return False
+        sub = argv[1].lower()
+
+        # sub-subcommand restrictions for commands that can mutate
+        if sub == "stash" and len(argv) >= 3:
+            return argv[2].lower() == "list"
+        if sub == "branch":
+            # Only allow listing: 'git branch', 'git branch -v', 'git branch --list'
+            return len(argv) == 2 or (
+                len(argv) == 3 and argv[2] in ("-v", "--list", "-a", "--all")
+            )
+        if sub == "remote" and len(argv) >= 3:
+            # Only allow 'git remote -v' (listing)
+            return argv[2] in ("-v", "--verbose", "-a", "--all")
+        if sub == "remote" and len(argv) == 2:
+            return True  # just 'git remote' is listing
+        if sub == "stash" and len(argv) == 2:
+            return False  # bare 'git stash' blocks (could stash changes)
+
+        return sub in _GIT_READONLY
+
+    # Simple commands: allow
+    return True
+
 
 # Auto-approve settings (can be overridden via env)
 AUTO_THRESHOLD = float(os.environ.get("MOA_GATE_AUTO_THRESHOLD", "0.8"))  # 80%
@@ -81,28 +154,35 @@ def _check_rate_limit() -> Tuple[bool, int]:
     """Check if auto-approve is within rate limit.
 
     Returns (allowed: bool, remaining_count: int).
-    Uses a simple JSON file with timestamps.
+    Uses flock-serialized JSON file with timestamps.
     """
     now = time.time()
     cutoff = now - AUTO_RATE_WINDOW
 
     try:
         RATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        if RATE_FILE.exists():
-            raw = RATE_FILE.read_text()
-            timestamps = json.loads(raw) if raw.strip() else []
-        else:
-            timestamps = []
+        lock_file = RATE_FILE.parent / ".rate_counter.lock"
+        with open(str(lock_file), "w") as lock_f:
+            import fcntl
+            fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
+            try:
+                if RATE_FILE.exists():
+                    raw = RATE_FILE.read_text()
+                    timestamps = json.loads(raw) if raw.strip() else []
+                else:
+                    timestamps = []
 
-        # Prune old entries
-        timestamps = [ts for ts in timestamps if ts > cutoff]
+                # Prune old entries
+                timestamps = [ts for ts in timestamps if ts > cutoff]
 
-        allowed = len(timestamps) < AUTO_RATE_LIMIT
-        remaining = AUTO_RATE_LIMIT - len(timestamps)
+                allowed = len(timestamps) < AUTO_RATE_LIMIT
+                remaining = AUTO_RATE_LIMIT - len(timestamps)
 
-        if allowed:
-            timestamps.append(now)
-            RATE_FILE.write_text(json.dumps(timestamps))
+                if allowed:
+                    timestamps.append(now)
+                    RATE_FILE.write_text(json.dumps(timestamps))
+            finally:
+                fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
 
         return allowed, remaining
     except Exception as exc:
@@ -178,10 +258,10 @@ def _on_pre_tool_call(
     if tool_name not in BLOCKED_TOOLS:
         return None
 
-    # Terminal read-only whitelist
+    # Terminal read-only whitelist (argv-based, not regex)
     if tool_name == "terminal" and isinstance(args, dict):
         cmd = args.get("command", "")
-        if isinstance(cmd, str) and TERMINAL_READONLY_PATTERNS.match(cmd):
+        if _is_readonly_command(cmd):
             return None
 
     # Read state

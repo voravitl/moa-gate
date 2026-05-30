@@ -57,41 +57,59 @@ HMAC_HEX_LEN = 64  # SHA-256 hex
 DEFAULT_TTL_SECONDS = 15 * 60   # 15 minutes
 MAX_TTL_SECONDS = 60 * 60       # 60 minutes
 
+# Session GC
+MAX_SESSION_AGE_SECONDS = 3600  # 1 hour — stale per-session state files
+
+
+def _safe_session_id(session_id: str) -> str:
+    """Return a filesystem-safe session id for per-session state files."""
+    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in (session_id or ""))
+    return safe[:160]
+
+
+def state_file_for_session(session_id: str = "") -> Path:
+    """Return the signed state file for a session. Empty keeps legacy global path."""
+    safe = _safe_session_id(session_id)
+    if not safe:
+        return STATE_FILE
+    return STATE_DIR / "sessions" / f"{safe}.json"
+
 
 # ---------------------------------------------------------------------------
 # Key management
 # ---------------------------------------------------------------------------
 
 def _load_or_generate_key() -> str:
-    """Load MOA_GATE_KEY from environment, or generate + persist to .env."""
+    """Load MOA_GATE_KEY from environment or .env; generate only if absent."""
     key = os.environ.get(ENV_KEY_NAME)
     if key:
         return key
 
-    key = secrets.token_hex(32)
     try:
         env_path = ENV_FILE
         env_path.parent.mkdir(parents=True, exist_ok=True)
-        existing = ""
         if env_path.exists():
             existing = env_path.read_text()
-            if ENV_KEY_NAME in existing:
-                lines = existing.splitlines(keepends=True)
-                new_lines = []
-                for line in lines:
-                    if line.startswith(f"{ENV_KEY_NAME}="):
-                        new_lines.append(f"{ENV_KEY_NAME}={key}\n")
-                        logger.info("Replaced existing MOA_GATE_KEY in .env")
-                    else:
-                        new_lines.append(line)
-                env_path.write_text("".join(new_lines))
-                os.environ[ENV_KEY_NAME] = key
-                return key
+            for line in existing.splitlines():
+                if line.startswith(f"{ENV_KEY_NAME}="):
+                    stored_key = line.split("=", 1)[1].strip()
+                    if stored_key:
+                        os.environ[ENV_KEY_NAME] = stored_key
+                        # Ensure key file is protected
+                        try:
+                            env_path.chmod(0o600)
+                        except OSError:
+                            pass
+                        logger.info("Loaded existing MOA_GATE_KEY from .env")
+                        return stored_key
 
-        with open(str(env_path), "a") as f:
-            if existing and not existing.endswith("\n"):
-                f.write("\n")
-            f.write(f"{ENV_KEY_NAME}={key}\n")
+        key = secrets.token_hex(32)
+        # Create/append with 0o600 from the start (no TOCTOU window)
+        fd = os.open(str(env_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.write(fd, f"\n{ENV_KEY_NAME}={key}\n".encode("utf-8"))
+        finally:
+            os.close(fd)
         os.environ[ENV_KEY_NAME] = key
         logger.info("Generated new MOA_GATE_KEY in .env")
     except Exception as exc:
@@ -100,6 +118,26 @@ def _load_or_generate_key() -> str:
 
     return key
 
+
+
+def sync_key() -> str:
+    """Re-read MOA_GATE_KEY from .env and sync into os.environ.
+    
+    Called on each pre_tool_call to keep Hermes in sync with .env.
+    Falls back to _load_or_generate_key() if .env is empty.
+    """
+    try:
+        env_path = ENV_FILE
+        if env_path.exists():
+            for line in env_path.read_text().splitlines():
+                if line.startswith(f"{ENV_KEY_NAME}="):
+                    stored_key = line.split("=", 1)[1].strip()
+                    if stored_key:
+                        os.environ[ENV_KEY_NAME] = stored_key
+                        return stored_key
+    except OSError:
+        pass
+    return _load_or_generate_key()
 
 def get_key() -> str:
     key = os.environ.get(ENV_KEY_NAME)
@@ -200,14 +238,14 @@ def default_state() -> Dict[str, Any]:
     }
 
 
-def read() -> Dict[str, Any]:
+def read(session_id: str = "") -> Dict[str, Any]:
     """Read and verify state file. Returns default_state() if missing/invalid.
 
     Checks TTL expiry: if approved but expired, auto-revoke.
     Backward compat: old state without expires_at (LYN format) gets a
     computed expiry injected AFTER HMAC verification.
     """
-    path = STATE_FILE
+    path = state_file_for_session(session_id)
     if not path.exists():
         return default_state()
 
@@ -318,12 +356,14 @@ def write(status: str, approved_by: list, reason: str,
         data["hmac"] = sign(data)
 
         # Atomic write
-        fd, tmp_path = tempfile.mkstemp(dir=str(STATE_DIR), prefix=".state_tmp_", suffix=".json")
+        target = state_file_for_session(session_id)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=str(target.parent), prefix=".state_tmp_", suffix=".json")
         try:
             with os.fdopen(fd, "w") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
-            os.replace(tmp_path, str(STATE_FILE))
-            STATE_FILE.chmod(0o600)
+            os.replace(tmp_path, str(target))
+            target.chmod(0o600)
         except Exception:
             try:
                 os.unlink(tmp_path)
@@ -339,7 +379,7 @@ def approve(approved_by: list, reason: str, session_id: str = "",
     """Approve the gate with TTL (manual approval)."""
     write("approved", approved_by, reason, session_id,
           ttl_seconds=ttl_seconds, trigger="manual", **kwargs)
-    return read()
+    return read(session_id)
 
 
 def approve_auto(approved_by: list, reason: str, session_id: str = "",
@@ -367,35 +407,57 @@ def approve_auto(approved_by: list, reason: str, session_id: str = "",
           cool_down_until=cool_down_until,
           trigger="auto_majority",
           council_config_hash=council_config_hash)
-    return read()
+    return read(session_id)
 
 
-def override_cooldown(override_by: str = "human") -> Dict[str, Any]:
+def override_cooldown(override_by: str = "human", session_id: str = "") -> Dict[str, Any]:
     """Override cool-down period — execute immediately.
 
     Reads current state, clears cool_down_until, sets override_by.
+    Preserves original expires_at and approved_at to avoid extending TTL.
+    Reuses write() for atomic write with flock.
     """
-    data = read()
+    data = read(session_id)
     if not data.get("cool_down_until"):
         return data  # No cooldown active, nothing to do
-    data["cool_down_until"] = None
-    data["override_by"] = override_by
-    data["hmac"] = sign(data)
-    # Use write fields reconstruction
+
+    now = datetime.now(timezone.utc)
+    # Preserve original expires_at and approved_at so override doesn't extend TTL
+    preserved_expires_at = data.get("expires_at")
+    preserved_approved_at = data.get("approved_at")
+
+    # Use write() with proper lock — then manually restore expires/approved
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=str(STATE_DIR), prefix=".state_tmp_", suffix=".json")
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, str(STATE_FILE))
-        STATE_FILE.chmod(0o600)
-    except Exception:
+    lock_path = STATE_DIR / ".state.lock"
+    with open(str(lock_path), "w") as lock_f:
+        fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
         try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-    return read()
+            data["cool_down_until"] = None
+            data["override_by"] = override_by
+            if preserved_expires_at:
+                data["expires_at"] = preserved_expires_at
+            if preserved_approved_at:
+                data["approved_at"] = preserved_approved_at
+            data["hmac"] = sign(data)
+
+            target = state_file_for_session(session_id)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(dir=str(target.parent), prefix=".state_tmp_", suffix=".json")
+            try:
+                with os.fdopen(fd, "w") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                os.replace(tmp_path, str(target))
+                target.chmod(0o600)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+        finally:
+            fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+
+    return read(session_id)
 
 
 def is_in_cooldown(data: Dict[str, Any]) -> bool:
@@ -414,10 +476,42 @@ def is_in_cooldown(data: Dict[str, Any]) -> bool:
         return False
 
 
-def revoke(reason: str = "", trigger: str = "manual") -> Dict[str, Any]:
-    """Revoke the gate. trigger: 'manual' | 'ttl_expired' | 'session_end'."""
-    write("pending", [], reason or f"Revoked ({trigger})")
-    return read()
+def revoke(reason: str = "", trigger: str = "manual", session_id: str = "") -> Dict[str, Any]:
+    """Revoke the gate for one session. Empty session_id keeps legacy global state."""
+    write("pending", [], reason or f"Revoked ({trigger})", session_id=session_id)
+    return read(session_id)
+
+
+# ---------------------------------------------------------------------------
+# Session GC — cleanup stale per-session state files
+# ---------------------------------------------------------------------------
+
+def gc_stale_sessions(max_age: int = MAX_SESSION_AGE_SECONDS) -> int:
+    """Remove session state files older than `max_age` seconds.
+    
+    Returns count of removed files. Skips sessions/ dir itself.
+    """
+    sessions_dir = STATE_DIR / "sessions"
+    if not sessions_dir.is_dir():
+        return 0
+    
+    now = datetime.now(timezone.utc).timestamp()
+    removed = 0
+    for f in sessions_dir.iterdir():
+        if not f.is_file() or not f.name.endswith(".json"):
+            continue
+        try:
+            age = now - f.stat().st_mtime
+            if age > max_age:
+                f.unlink()
+                removed += 1
+                logger.debug("GC: removed stale session file %s (age=%.0fs)", f.name, age)
+        except OSError as exc:
+            logger.warning("GC: failed to remove %s: %s", f.name, exc)
+            continue
+    if removed:
+        logger.info("GC: removed %d stale session file(s)", removed)
+    return removed
 
 
 # ---------------------------------------------------------------------------

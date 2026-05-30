@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -74,10 +75,31 @@ def _read_last_hash() -> str:
     return CHAIN_HASH_SEED
 
 
+def _get_hmac_key() -> str:
+    """Get MOA_GATE_KEY for HMAC-signed audit chain.
+
+    Lazy-imports state module to avoid circular imports at module level.
+    Falls back to environment variable if state module unavailable.
+    """
+    try:
+        import state
+        return state.get_key()
+    except (ImportError, AttributeError):
+        return os.environ.get("MOA_GATE_KEY", "")
+
+
 def _compute_hash(entry: Dict[str, Any]) -> str:
-    """Compute SHA-256 hash of the canonical JSON of an entry."""
+    """Compute keyed HMAC-SHA256 hash of the canonical JSON of an entry.
+
+    Uses MOA_GATE_KEY to make the chain tamper-evident:
+    rewriting the log requires knowing the key.
+    Raises RuntimeError if no key is available (fail-closed).
+    """
+    key = _get_hmac_key()
+    if not key:
+        raise RuntimeError("MOA Gate audit: HMAC key unavailable — cannot compute hash")
     payload = json.dumps(entry, sort_keys=True, ensure_ascii=False).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+    return hmac.new(key.encode("utf-8"), payload, hashlib.sha256).hexdigest()
 
 
 def log(action: str, *, tool: str = "", by: Optional[List[str]] = None,
@@ -96,8 +118,6 @@ def log(action: str, *, tool: str = "", by: Optional[List[str]] = None,
         trigger: "manual" | "auto_majority" | "ttl_expired" | "session_end" | ""
         tier: 1 or 2 (for auto_approve/shadow_block)
     """
-    prev_hash = _read_last_hash()
-
     entry: Dict[str, Any] = {
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "action": action,
@@ -107,21 +127,20 @@ def log(action: str, *, tool: str = "", by: Optional[List[str]] = None,
         "session_id": session_id or "",
         "trigger": trigger or "",
         "tier": tier if tier else 0,
-        "prev_hash": prev_hash,
     }
 
-    # Compute this entry's hash
-    entry_hash = _compute_hash(entry)
-    entry["hash"] = entry_hash
-
-    # Atomically append
-    AUDIT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    line = json.dumps(entry, ensure_ascii=False) + "\n"
-
     # Use fcntl flock for exclusive write access
+    # Read prev_hash INSIDE the lock to prevent chain forks
+    AUDIT_FILE.parent.mkdir(parents=True, exist_ok=True)
     try:
         with open(str(AUDIT_FILE), "a") as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            # Read last hash while holding the exclusive lock
+            entry["prev_hash"] = _read_last_hash()
+            # Compute this entry's hash
+            entry_hash = _compute_hash(entry)
+            entry["hash"] = entry_hash
+            line = json.dumps(entry, ensure_ascii=False) + "\n"
             f.write(line)
             f.flush()
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
@@ -175,7 +194,13 @@ def verify_chain() -> List[Dict[str, Any]]:
                 expected_hash = _compute_hash(
                     {**entry, "prev_hash": stored_prev}
                 )
-                if stored_hash and stored_hash != expected_hash:
+                if stored_hash is None:
+                    violations.append({
+                        "line": line_num,
+                        "error": "missing hash — tamper or corruption",
+                        "expected": expected_hash,
+                    })
+                elif stored_hash != expected_hash:
                     violations.append({
                         "line": line_num,
                         "error": "hash mismatch",
