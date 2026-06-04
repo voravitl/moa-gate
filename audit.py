@@ -87,13 +87,14 @@ def log(action: str, *, tool: str = "", by: Optional[List[str]] = None,
 
     Args:
         action: One of "block", "allow", "approve", "auto_approve",
-                "revoke", "auto_revoke", "override", "cool_down_ok",
-                "shadow_block", "rate_limited", "dissent_issue", "error"
+               "override", "revoke", "shadow_block",
+               "emergency_bypass",
+               "rate_limited", "dissent_issue", "error"
         tool: Tool name (for block/allow)
         by: List of approving voices (for approve)
         reason: Reason string
         session_id: Current session ID
-        trigger: "manual" | "auto_majority" | "ttl_expired" | "session_end" | ""
+        trigger: "manual" | "auto_majority" | "emergency" | "ttl_expired" | "session_end" | ""
         tier: 1 or 2 (for auto_approve/shadow_block)
     """
     prev_hash = _read_last_hash()

@@ -80,35 +80,27 @@ def state_file_for_session(session_id: str = "") -> Path:
 # ---------------------------------------------------------------------------
 
 def _load_or_generate_key() -> str:
-    """Load MOA_GATE_KEY from environment, or generate + persist to .env."""
+    """Load MOA_GATE_KEY from environment or .env; generate only if absent."""
     key = os.environ.get(ENV_KEY_NAME)
     if key:
         return key
 
-    key = secrets.token_hex(32)
     try:
         env_path = ENV_FILE
         env_path.parent.mkdir(parents=True, exist_ok=True)
-        existing = ""
         if env_path.exists():
             existing = env_path.read_text()
-            if ENV_KEY_NAME in existing:
-                lines = existing.splitlines(keepends=True)
-                new_lines = []
-                for line in lines:
-                    if line.startswith(f"{ENV_KEY_NAME}="):
-                        new_lines.append(f"{ENV_KEY_NAME}={key}\n")
-                        logger.info("Replaced existing MOA_GATE_KEY in .env")
-                    else:
-                        new_lines.append(line)
-                env_path.write_text("".join(new_lines))
-                os.environ[ENV_KEY_NAME] = key
-                return key
+            for line in existing.splitlines():
+                if line.startswith(f"{ENV_KEY_NAME}="):
+                    stored_key = line.split("=", 1)[1].strip()
+                    if stored_key:
+                        os.environ[ENV_KEY_NAME] = stored_key
+                        logger.info("Loaded existing MOA_GATE_KEY from .env")
+                        return stored_key
 
+        key = secrets.token_hex(32)
         with open(str(env_path), "a") as f:
-            if existing and not existing.endswith("\n"):
-                f.write("\n")
-            f.write(f"{ENV_KEY_NAME}={key}\n")
+            f.write(f"\n{ENV_KEY_NAME}={key}\n")
         os.environ[ENV_KEY_NAME] = key
         logger.info("Generated new MOA_GATE_KEY in .env")
     except Exception as exc:
@@ -117,6 +109,26 @@ def _load_or_generate_key() -> str:
 
     return key
 
+
+
+def sync_key() -> str:
+    """Re-read MOA_GATE_KEY from .env and sync into os.environ.
+    
+    Called on each pre_tool_call to keep Hermes in sync with .env.
+    Falls back to _load_or_generate_key() if .env is empty.
+    """
+    try:
+        env_path = ENV_FILE
+        if env_path.exists():
+            for line in env_path.read_text().splitlines():
+                if line.startswith(f"{ENV_KEY_NAME}="):
+                    stored_key = line.split("=", 1)[1].strip()
+                    if stored_key:
+                        os.environ[ENV_KEY_NAME] = stored_key
+                        return stored_key
+    except OSError:
+        pass
+    return _load_or_generate_key()
 
 def get_key() -> str:
     key = os.environ.get(ENV_KEY_NAME)
@@ -393,29 +405,40 @@ def override_cooldown(override_by: str = "human", session_id: str = "") -> Dict[
     """Override cool-down period — execute immediately.
 
     Reads current state, clears cool_down_until, sets override_by.
+    Uses fcntl.flock to serialize with concurrent write() calls.
     """
-    data = read(session_id)
-    if not data.get("cool_down_until"):
-        return data  # No cooldown active, nothing to do
-    data["cool_down_until"] = None
-    data["override_by"] = override_by
-    data["hmac"] = sign(data)
-    # Use write fields reconstruction
-    target = state_file_for_session(session_id)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=str(target.parent), prefix=".state_tmp_", suffix=".json")
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, str(target))
-        target.chmod(0o600)
-    except Exception:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    lock_path = STATE_DIR / ".state.lock"
+    with open(str(lock_path), "w") as lock_f:
+        fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
         try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-    return read(session_id)
+            data = read(session_id)
+            if not data.get("cool_down_until"):
+                return data  # No cooldown active, nothing to do
+            data["cool_down_until"] = None
+            data["override_by"] = override_by
+            data["hmac"] = sign(data)
+            # Use write fields reconstruction
+            target = state_file_for_session(session_id)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(dir=str(target.parent), prefix=".state_tmp_", suffix=".json")
+            try:
+                with os.fdopen(fd, "w") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                os.replace(tmp_path, str(target))
+                target.chmod(0o600)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+            return read(session_id)
+        finally:
+            try:
+                fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
 
 
 def is_in_cooldown(data: Dict[str, Any]) -> bool:

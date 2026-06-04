@@ -14,13 +14,13 @@ Blocked tools (all modes):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import re
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -191,6 +191,9 @@ def _on_pre_tool_call(
 
     session_id = session_id or os.environ.get("HERMES_SESSION_ID", "") or f"anon-{os.getpid():d}"
 
+    # Sync HMAC key from .env — keeps Hermes in sync if subprocess overwrote
+    st.sync_key()
+
     # Check if tool is in blocked list
     if tool_name not in BLOCKED_TOOLS:
         return None
@@ -258,7 +261,9 @@ def _on_pre_tool_call(
     # Block — pending or any error
     if status == "pending":
         msg = (
-            "🛑 MOA Gate: Write tool blocked — MOA council approval required.\n"
+            f"🛑 MOA Gate: Write tool blocked — \"{tool_name}\"\n"
+            "  MOA council approval required.\n"
+            "  ⏏ After approval, retry this operation immediately.\n"
             "  Run `/moa-adviser` for a multi-model review, then:\n"
             "  `/moa-approve --by <voices> --reason \"<reason>\"`"
         )
@@ -379,7 +384,7 @@ def _handle_council_complete(raw_args: str) -> str:
 
     # --- Step 5: Shadow mode? ---
     session_id = os.environ.get("HERMES_SESSION_ID", "") or f"anon-{os.getpid():d}"
-    council_hash = "auto"  # simplified — could be from config
+    council_hash = hashlib.sha256(json.dumps(council, sort_keys=True).encode()).hexdigest()[:12]
 
     if SHADOW_MODE:
         au.log("shadow_block", by=approved_names, reason=f"shadow_mode_tier_{final_tier}",
@@ -422,6 +427,8 @@ def _handle_council_complete(raw_args: str) -> str:
                 f"   ⏳ Cool-down: {COOLDOWN_SECS}s (auto-on expiry)\n"
                 f"   Override: `/moa-approve --override --reason \"...\"`\n"
             )
+        else:
+            result += "\n   ⏏ Gate open — retry the blocked write operation now."
         result += f"   Rate limit: {remaining - 1}/{AUTO_RATE_LIMIT} remaining this hour"
         return result
 
@@ -445,8 +452,9 @@ Subcommands:
   council-complete '<json>'            Submit council results for auto-approve
                                        JSON fields: votes (required), task_description,
                                        dissent_reason, changed_paths, diff_keywords,
-                                       mode (\"moa\"|\"cli\"|\"cloud\", default=cloud)
+                                       mode ("moa"|"cli"|"cloud", default=cloud)
   revoke                              Reset gate to pending
+  emergency --reason <text>           🚨 EMERGENCY bypass — approve without council
   log [N]                             Show last N audit log entries (default 10)
   verify                              Verify audit log chain integrity
   help                                This help
@@ -455,9 +463,28 @@ Examples:
   /moa-approve --by architect,critic,pragmatist --reason "Fix prod bug #123"
   /moa-council-complete '{"votes":{"a":"approve","c":"approve"},"task_description":"fix auth"}'
   /moa-approve --override --reason "Hotfix — skip cooldown"
+  /moa-emergency --reason "Production DNS outage — immediate hotfix"
   /moa-revoke
   /moa-log 20
 """
+
+
+def _get_last_blocked_tool(session_id: str) -> str:
+    """Find most recent blocked tool name for a session from audit log.
+
+    Returns empty string if no block found.
+    read_log() returns newest-first, so we iterate in order.
+    Only returns the most recent block; if multiple tools were blocked
+    in a row, only the last one is advertised.
+    """
+    try:
+        entries = au.read_log(200)
+        for entry in entries:
+            if entry.get("action") == "block" and entry.get("session_id") == session_id:
+                return entry.get("tool", "") or ""
+    except Exception:
+        pass
+    return ""
 
 
 def _handle_approve(raw_args: str) -> str:
@@ -501,10 +528,14 @@ def _handle_approve(raw_args: str) -> str:
         au.log("approve", by=voices, reason=reason, session_id=session_id)
 
         voices_str = ", ".join(voices)
+        # Look up most recently blocked tool from audit log for retry hint
+        last_tool = _get_last_blocked_tool(session_id)
+        retry_hint = f"\n   ⏏ RETRY: {last_tool}" if last_tool else ""
         return (
             f"✅ MOA Gate APPROVED by {voices_str}\n"
             f"   Reason: {reason}\n"
-            f"   Write tools are now allowed."
+            f"   Write tools are now allowed.{retry_hint}\n"
+            f"   ⏏ Gate open — retry the blocked operation now."
         )
     except Exception as exc:
         au.log("error", reason=f"approve_failed: {exc}", session_id=session_id)
@@ -520,28 +551,82 @@ def _handle_override(raw_args: str) -> str:
 
     try:
         session_id = os.environ.get("HERMES_SESSION_ID", "") or f"anon-{os.getpid():d}"
+        # Check if there's actually a cool-down to override
+        before = st.read(session_id)
+        had_cooldown = bool(before.get("cool_down_until"))
         state = st.override_cooldown(override_by="human", session_id=session_id)
         if not state.get("cool_down_until"):
-            # Cool-down cleared
-            au.log("override", reason=reason or "Cooldown overridden by human",
-                   session_id=os.environ.get("HERMES_SESSION_ID", ""))
-            return (
-                f"✅ Cool-down overridden!\n"
-                f"   Write tools are now allowed immediately.\n"
-            )
+            if had_cooldown:
+                last_tool = _get_last_blocked_tool(session_id)
+                retry_hint = f"\n   ⏏ RETRY: {last_tool}" if last_tool else ""
+                au.log("override", reason=reason or "Cooldown overridden by human",
+                       session_id=session_id)
+                return (
+                    f"✅ Cool-down overridden!\n"
+                    f"   Write tools are now allowed immediately.{retry_hint}\n"
+                )
+            return "ℹ️  No active cool-down — nothing to override."
         return "❌ Cool-down override failed — state unchanged."
     except Exception as exc:
         return f"❌ Override failed: {exc}"
+
+
+def _handle_emergency(raw_args: str) -> str:
+    """Emergency bypass — approve immediately without council.
+
+    Usage: /moa-emergency --reason "<emergency reason>"
+
+    Bypasses cool-down, requires no voices, logs as 'emergency'.
+    For production incidents where MOA council is too slow.
+    """
+    reason_match = re.search(r'--reason\s+"([^"]*)"|--reason\s+(\S+)', raw_args)
+    if not reason_match:
+        return (
+            "❌ Usage: /moa-emergency --reason \"<reason>\"\n"
+            "   Example: /moa-emergency --reason \"Production DNS outage — hotfix\""
+        )
+    reason = (reason_match.group(1) or reason_match.group(2) or "emergency").strip()
+    if not reason or reason == "emergency":
+        return (
+            "❌ Usage: /moa-emergency --reason \"<meaningful reason>\"\n"
+            "   Example: /moa-emergency --reason \"Production DNS outage — deploying hotfix\"\n"
+            "   Empty reason is not allowed — audit requires a real explanation."
+        )
+
+    session_id = os.environ.get("HERMES_SESSION_ID", "") or f"anon-{os.getpid():d}"
+
+    try:
+        st.approve(
+            approved_by=["emergency"],
+            reason=reason,
+            session_id=session_id,
+        )
+        au.log("approve", by=["emergency"], reason=f"EMERGENCY: {reason}",
+               session_id=session_id, trigger="emergency")
+
+        # Look up last blocked tool from audit log for retry hint
+        last_tool = _get_last_blocked_tool(session_id)
+        retry_hint = f"\n   ⏏ RETRY: {last_tool}" if last_tool else ""
+
+        return (
+            "🚨 MOA Gate: EMERGENCY BYPASS\n"
+            f"   Reason: {reason}\n"
+            f"   Write tools are now unblocked immediately.{retry_hint}\n"
+            f"   ⏏ Gate open — retry the blocked operation now.\n"
+            f"   ⚠️  Remember to revoke after emergency: `/moa-revoke`"
+        )
+    except Exception as exc:
+        au.log("error", reason=f"emergency_failed: {exc}", session_id=session_id)
+        return f"❌ Emergency bypass failed: {exc}"
 
 
 def _handle_revoke(raw_args: str) -> str:
     """Revoke gate approval."""
     reason = raw_args.strip() or "Session complete"
     try:
-        revoke_reason = raw_args.strip() if raw_args.strip() else reason
         session_id = os.environ.get("HERMES_SESSION_ID", "") or f"anon-{os.getpid():d}"
-        st.revoke(revoke_reason, session_id=session_id)
-        au.log("revoke", reason=revoke_reason, session_id=session_id)
+        st.revoke(reason, session_id=session_id)
+        au.log("revoke", reason=reason, session_id=session_id)
         return "🔄 MOA Gate REVOKED — reset to pending. Run `/moa-approve` when ready."
     except Exception as exc:
         return f"❌ Revoke failed: {exc}"
@@ -605,6 +690,8 @@ def _handle_slash(raw_args: str) -> Optional[str]:
         return _handle_council_complete(" ".join(argv[1:]))
     if sub in ("revoke", "--revoke"):
         return _handle_revoke(" ".join(argv[1:]))
+    if sub in ("emergency", "bypass", "--emergency"):
+        return _handle_emergency(" ".join(argv[1:]))
     if sub in ("log", "logs", "--log"):
         return _handle_log(" ".join(argv[1:]))
     if sub in ("verify", "--verify", "check"):
@@ -706,6 +793,11 @@ def register(ctx) -> None:
         "moa-verify",
         handler=_handle_verify,
         description="Verify audit log integrity.",
+    )
+    ctx.register_command(
+        "moa-emergency",
+        handler=_handle_emergency,
+        description="🚨 Emergency bypass — approve immediately without council. Usage: /moa-emergency --reason \"...\"",
     )
 
     # P2: on_session_end — auto-revoke when session ends
