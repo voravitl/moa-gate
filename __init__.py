@@ -146,6 +146,21 @@ SAFETY_ROLES = frozenset({"critic", "skeptic"})
 RATE_FILE = Path.home() / ".hermes" / "moa-gate" / ".rate_counter.json"
 
 
+def _effective_session(session_id: str = "") -> str:
+    """Compute the session id used for state isolation.
+
+    Priority: explicit kwarg > HERMES_SESSION_ID env > anon-PID fallback.
+    All handlers MUST use this so reads and writes hit the same per-session
+    state file. Otherwise /moa-approve writes one file and pre_tool_call
+    reads a different one, leaving status=pending and blocking forever.
+    """
+    return (
+        session_id
+        or os.environ.get("HERMES_SESSION_ID", "")
+        or f"anon-{os.getpid():d}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Rate limiter
 # ---------------------------------------------------------------------------
@@ -264,8 +279,10 @@ def _on_pre_tool_call(
         if _is_readonly_command(cmd):
             return None
 
-    # Read state
-    state = st.read()
+    # Read state — MUST use same session as approve handlers so we read
+    # the same per-session state file that was written.
+    eff_session = _effective_session(session_id)
+    state = st.read(eff_session)
     status = state.get("status", "pending")
 
     if status == "approved":
@@ -302,10 +319,9 @@ def _on_pre_tool_call(
         # ---- Session isolation ----
         allowed_session = state.get("session_id", "")
         if allowed_session:
-            effective_session = session_id or f"anon-{os.getpid():d}"
-            if effective_session != allowed_session:
+            if eff_session != allowed_session:
                 au.log("block", tool=tool_name, reason="session_mismatch",
-                       session_id=session_id)
+                       session_id=eff_session)
                 return {
                     "action": "block",
                     "message": (
@@ -441,7 +457,7 @@ def _handle_council_complete(raw_args: str) -> str:
         )
 
     # --- Step 5: Shadow mode? ---
-    session_id = os.environ.get("HERMES_SESSION_ID", "") or f"anon-{os.getpid():d}"
+    session_id = _effective_session()
     council_hash = "auto"  # simplified — could be from config
 
     if SHADOW_MODE:
@@ -554,10 +570,8 @@ def _handle_approve(raw_args: str) -> str:
     if not reason:
         return "❌ --reason is required."
 
-    # Get session_id
-    session_id = os.environ.get("HERMES_SESSION_ID", "") or ""
-    if not session_id:
-        session_id = f"anon-{os.getpid():d}"
+    # Get session_id — same algorithm as pre_tool_call so reads find this write
+    session_id = _effective_session()
 
     try:
         st.approve(voices, reason, session_id)
@@ -581,12 +595,13 @@ def _handle_override(raw_args: str) -> str:
     if reason_match:
         reason = reason_match.group(1) or reason_match.group(2) or ""
 
+    session_id = _effective_session()
     try:
-        state = st.override_cooldown(override_by="human")
+        state = st.override_cooldown(override_by="human", session_id=session_id)
         if not state.get("cool_down_until"):
             # Cool-down cleared
             au.log("override", reason=reason or "Cooldown overridden by human",
-                   session_id=os.environ.get("HERMES_SESSION_ID", ""))
+                   session_id=session_id)
             return (
                 f"✅ Cool-down overridden!\n"
                 f"   Write tools are now allowed immediately.\n"
@@ -599,10 +614,11 @@ def _handle_override(raw_args: str) -> str:
 def _handle_revoke(raw_args: str) -> str:
     """Revoke gate approval."""
     reason = raw_args.strip() or "Session complete"
+    session_id = _effective_session()
     try:
         revoke_reason = raw_args.strip() if raw_args.strip() else reason
-        st.revoke(revoke_reason)
-        au.log("revoke", reason=revoke_reason)
+        st.revoke(revoke_reason, session_id=session_id)
+        au.log("revoke", reason=revoke_reason, session_id=session_id)
         return "🔄 MOA Gate REVOKED — reset to pending. Run `/moa-approve` when ready."
     except Exception as exc:
         return f"❌ Revoke failed: {exc}"
@@ -611,7 +627,7 @@ def _handle_revoke(raw_args: str) -> str:
 def _handle_status(raw_args: str) -> str:
     """Show current gate state."""
     try:
-        data = st.read()
+        data = st.read(_effective_session())
         return st.format_status(data)
     except Exception as exc:
         return f"❌ Status error: {exc}"
@@ -687,13 +703,17 @@ def _on_session_end(*, session_id: str = "", completed: bool = False,
     Uninterruptible signals (kill -9, crash) require TTL-only recovery.
     """
     try:
-        data = st.read()
+        eff_session = _effective_session(session_id)
+        data = st.read(eff_session)
         if data.get("status") == "approved":
-            st.revoke(f"Session ended (completed={completed}, interrupted={interrupted})")
+            st.revoke(
+                f"Session ended (completed={completed}, interrupted={interrupted})",
+                session_id=eff_session,
+            )
             au.log("revoke", by=["system"],
                    reason=f"session_end_completed={completed}_interrupted={interrupted}",
-                   session_id=session_id)
-            logger.info("MOA Gate: auto-revoked on session end (%s)", session_id)
+                   session_id=eff_session)
+            logger.info("MOA Gate: auto-revoked on session end (%s)", eff_session)
     except Exception as exc:
         # Never crash session teardown
         logger.warning("MOA Gate: on_session_end error: %s", exc)
