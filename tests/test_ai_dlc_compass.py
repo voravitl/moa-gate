@@ -1,28 +1,32 @@
 """Regression tests for AI-DLC Compass plugin.
 
-Covers all 5 known bugs:
+Covers known AI-DLC plugin bugs:
 1. _mark_steering_loaded() never called -> first-tool infinite block
 2. re.search in verifier/registry lacks try/except -> bad regex crashes hook
 3. payload extraction in __init__.py misses patch/terminal/process content
 4. install.sh dirname breaks under bash <(curl)
-5. auto-escalate claim in README/docs -- verify message-only vs actual MOA-Gate write
+5. critical violations claimed MOA escalation without evidence
+6. violation records hardcoded tool='write_file'
+7. module-level Path.home() left stale paths after HOME changes
 """
 
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 AI_DLC = ROOT / "ai-dlc"
 
 
-def load_ai_dlc(home: Path) -> object:
+def load_ai_dlc(home: Path) -> Any:
     """Load ai-dlc plugin under a transient HOME."""
     os.environ["HOME"] = str(home)
     for name in list(sys.modules):
@@ -132,6 +136,81 @@ class PayloadExtractionTest(unittest.TestCase):
             self.assertIsNotNone(result)
             self.assertTrue(result.get("block"))
 
+    def test_patch_bulk_payload_is_scanned(self):
+        """Patch mode='patch' must scan V4A multi-file payloads."""
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            plugin = load_ai_dlc(home)
+            plugin._mark_steering_loaded()
+            plugin.ph.set_phase("CONSTRUCTION", "test")
+            result = plugin.pre_tool_call(
+                "patch",
+                {
+                    "mode": "patch",
+                    "patch": "*** Begin Patch\n*** Update File: src/app.py\n+password = 'hunter222'\n*** End Patch",
+                },
+            )
+            self.assertIsNotNone(result)
+            self.assertTrue(result.get("block"))
+
+    def test_patch_bulk_payload_uses_real_target_path_for_rules(self):
+        """V4A patch scanning must use target path, not /tmp/patch-payload.sh."""
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            plugin = load_ai_dlc(home)
+            plugin._mark_steering_loaded()
+            plugin.ph.set_phase("CONSTRUCTION", "test")
+            result = plugin.pre_tool_call(
+                "patch",
+                {
+                    "mode": "patch",
+                    "patch": "*** Begin Patch\n*** Update File: src/app.py\n+eval(user_input)\n*** End Patch",
+                },
+            )
+            self.assertIsNotNone(result)
+            self.assertTrue(result.get("block"))
+            state_file = home / ".hermes" / "ai-dlc" / "state.json"
+            state = json.loads(state_file.read_text())
+            self.assertEqual(state["violations"][-1]["path"], "src/app.py")
+
+    def test_patch_bulk_inception_blocks_code_target_path(self):
+        """INCEPTION phase must inspect V4A target paths before allowing patches."""
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            plugin = load_ai_dlc(home)
+            plugin._mark_steering_loaded()
+            plugin.ph.set_phase("INCEPTION", "test")
+            result = plugin.pre_tool_call(
+                "patch",
+                {
+                    "mode": "patch",
+                    "patch": "*** Begin Patch\n*** Add File: src/app.py\n+print('code')\n*** End Patch",
+                },
+            )
+            self.assertIsNotNone(result)
+            self.assertTrue(result.get("block"))
+            self.assertIn("INCEPTION", result.get("message", ""))
+
+    def test_patch_bulk_move_to_uses_destination_path_for_rules(self):
+        """V4A Move to destination path must drive path-specific rules."""
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            plugin = load_ai_dlc(home)
+            plugin._mark_steering_loaded()
+            plugin.ph.set_phase("CONSTRUCTION", "test")
+            result = plugin.pre_tool_call(
+                "patch",
+                {
+                    "mode": "patch",
+                    "patch": "*** Begin Patch\n*** Update File: notes.txt\n*** Move to: src/app.py\n+eval(user_input)\n*** End Patch",
+                },
+            )
+            self.assertIsNotNone(result)
+            self.assertTrue(result.get("block"))
+            state_file = home / ".hermes" / "ai-dlc" / "state.json"
+            state = json.loads(state_file.read_text())
+            self.assertEqual(state["violations"][-1]["path"], "src/app.py")
+
     def test_terminal_command_is_scanned(self):
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)
@@ -179,8 +258,8 @@ class InstallerTest(unittest.TestCase):
 
 
 class AutoEscalateTest(unittest.TestCase):
-    def test_escalation_is_not_just_message(self):
-        """Bug 5: block message should NOT claim auto-escalate to MOA-Gate Tier 2."""
+    def test_critical_violation_records_moa_escalation(self):
+        """Bug 5: critical blocks should create MOA audit evidence, not just text."""
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)
             plugin = load_ai_dlc(home)
@@ -188,13 +267,69 @@ class AutoEscalateTest(unittest.TestCase):
             plugin.ph.set_phase("CONSTRUCTION", "test")
             result = plugin.pre_tool_call(
                 "write_file",
-                {"path": "src/app.py", "content": "password = 'hunter2'"},
+                {"path": "src/app.py", "content": "password = 'hunter222'"},
             )
             self.assertIsNotNone(result)
             self.assertTrue(result.get("block"))
             msg = result.get("message", "")
-            self.assertNotIn("auto-escalat", msg.lower())
-            self.assertNotIn("Tier 2", msg)
+            self.assertIn("Recorded MOA-Gate Tier 2 escalation", msg)
+
+            audit_log = home / ".hermes" / "moa-gate" / "audit.log"
+            self.assertTrue(audit_log.exists())
+            entry = json.loads(audit_log.read_text().strip().splitlines()[-1])
+            self.assertEqual(entry["action"], "shadow_block")
+            self.assertEqual(entry["tool"], "write_file")
+            self.assertEqual(entry["by"], ["ai-dlc"])
+            self.assertEqual(entry["trigger"], "ai_dlc")
+            self.assertEqual(entry["tier"], 2)
+
+    def test_violation_record_uses_actual_tool_name(self):
+        """Bug 6: _handle_violations used to hardcode tool='write_file'."""
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            plugin = load_ai_dlc(home)
+            plugin._mark_steering_loaded()
+            plugin.ph.set_phase("CONSTRUCTION", "test")
+            result = plugin.pre_tool_call(
+                "terminal",
+                {"command": "echo \"password = 'super-secret'\""},
+            )
+            self.assertIsNotNone(result)
+            state_file = home / ".hermes" / "ai-dlc" / "state.json"
+            state = json.loads(state_file.read_text())
+            self.assertEqual(state["violations"][-1]["tool"], "terminal")
+
+
+class DynamicHomeTest(unittest.TestCase):
+    def test_phase_and_registry_resolve_home_at_call_time(self):
+        """Bug 7: module-level Path.home() must not stay stale after HOME changes."""
+        with tempfile.TemporaryDirectory() as td1, tempfile.TemporaryDirectory() as td2:
+            home1 = Path(td1)
+            home2 = Path(td2)
+            plugin = load_ai_dlc(home1)
+            plugin.ph.set_phase("CONSTRUCTION", "initial")
+
+            os.environ["HOME"] = str(home2)
+            plugin.ph.set_phase("OPERATION", "moved home")
+
+            self.assertTrue((home1 / ".hermes" / "ai-dlc" / "phase.json").exists())
+            self.assertTrue((home2 / ".hermes" / "ai-dlc" / "phase.json").exists())
+            self.assertEqual(plugin.ph.get_phase(), "OPERATION")
+
+            steering = home2 / "wiki" / "steering"
+            steering.mkdir(parents=True)
+            (steering / "security.yaml").write_text(
+                'rules:\n'
+                '  - id: DYNAMIC-HOME\n'
+                '    description: dynamic home rule\n'
+                '    type: deny_pattern\n'
+                '    pattern: xyz_secret\n'
+                '    severity: critical\n'
+                '    suggestion: remove secret\n'
+                "    path_patterns: ['.*$']"
+            )
+            result = plugin.vr.verify_content("xyz_secret = 1", "src/app.py")
+            self.assertEqual(result["critical"][0]["rule_id"], "DYNAMIC-HOME")
 
 
 if __name__ == "__main__":
