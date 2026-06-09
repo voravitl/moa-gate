@@ -8,6 +8,7 @@ Multi-Model Adviser (MOA) enforcement gate + AI-Driven Development Lifecycle Com
 |-----------|------|--------|
 | **MOA-Gate Plugin** | `__init__.py` + `state.py` + `audit.py` + `tier.py` | 🔒 Block/unblock write tools, HMAC-signed state, audit log |
 | **AI-DLC Compass Plugin** | `ai-dlc/` | 🧭 Development lifecycle phase + steering rules compliance |
+| **MOA Multi-Model Plugin** | `moa-multimodel/` | 🛡️ Runs 3 real models (Claude + Codex + AGY) as adversarial voices, writes to moa-gate state |
 | **Skill** `moa-adviser` | `skill/SKILL.md` | 🧠 เรียก multi-model council เพื่อตัดสินใจ |
 
 ---

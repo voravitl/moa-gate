@@ -1,0 +1,6 @@
+name: moa-multimodel
+version: 0.1.0
+description: "MOA (Multi-Model Adviser) multi-model review runner. Spawns 3 real distinct models (Claude + Codex + AGY) as adversarial voices for PR review. Writes verdicts to moa-gate state.json so the gate pre-commit hook auto-approves commits. Sister plugin to moa-gate (state reuse). Includes rate-limit detection + fail-back + escalation. Provides /moa-multimodel slash command and auto-trigger on gh pr create."
+author: "Hermes / LYN"
+hooks:
+  - pre_tool_call
