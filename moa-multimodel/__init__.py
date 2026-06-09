@@ -37,10 +37,14 @@ import json
 import logging
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+# Validate PR identifiers to prevent shell injection via slash command args
+_PR_NUMBER_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +99,46 @@ def _resolve_moa_gate_path() -> str:
     return str(Path.home() / ".hermes" / "plugins" / "moa-gate")
 
 
+def _validate_pr_number(s: str) -> str:
+    """Sanitize PR identifier — only alphanumeric, dash, underscore allowed.
+
+    Returns "manual" if input contains anything else (prevents shell injection
+    when the value is interpolated into prompt files).
+    """
+    s = (s or "").strip()
+    if not s or not _PR_NUMBER_RE.match(s):
+        return "manual"
+    return s
+
+
+def _resolve_default_branch(repo_path: str) -> str:
+    """Resolve the repo's default branch (main / master / etc.).
+
+    Order: origin/HEAD symref > probe main > probe master > "main".
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", repo_path, "symbolic-ref",
+             "refs/remotes/origin/HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip().rsplit("/", 1)[-1]
+    except Exception:
+        pass
+    for branch in ("main", "master"):
+        try:
+            proc = subprocess.run(
+                ["git", "-C", repo_path, "rev-parse", "--verify", branch],
+                capture_output=True, text=True, timeout=5,
+            )
+            if proc.returncode == 0:
+                return branch
+        except Exception:
+            continue
+    return "main"
+
+
 def _on_pre_tool_call(
     tool_name: str = "",
     args: Optional[Dict[str, Any]] = None,
@@ -132,10 +176,11 @@ def _on_pre_tool_call(
         return None
 
     # Find diff: caller is expected to have staged/committed already,
-    # so we look at the most recent commit vs main
+    # so we look at the most recent commit vs the repo's default branch
+    default_branch = _resolve_default_branch(repo_path)
     try:
         diff_proc = subprocess.run(
-            ["git", "-C", repo_path, "diff", "main...HEAD"],
+            ["git", "-C", repo_path, "diff", f"{default_branch}...HEAD"],
             capture_output=True, text=True, timeout=30,
         )
         if diff_proc.returncode != 0:
@@ -150,13 +195,14 @@ def _on_pre_tool_call(
     if not Path(diff_path).exists():
         return None
 
-    # Set up voice prompts before invoking council
-    _setup_voice_prompts(diff_path, "auto", repo_path)
+    # Auto-trigger fires at gh_pr_create time — the PR does not exist yet,
+    # so we pass "manual" so council.sh skips the gh-pr-comment block.
+    _setup_voice_prompts(diff_path, "manual", repo_path)
 
     # Run the council script
     try:
         result = subprocess.run(
-            ["bash", _COUNCIL_SCRIPT, diff_path, "auto"],
+            ["bash", _COUNCIL_SCRIPT, diff_path, "manual"],
             capture_output=True, text=True, timeout=900,  # 15 min
             env={**os.environ, "MOA_GATE_PLUGIN_PATH": _resolve_moa_gate_path()},
         )
@@ -189,7 +235,7 @@ def _handle_council_review(raw_args: str) -> str:
         return ("Usage: /moa-multimodel review <diff-file> [pr-number]\n"
                 "Example: /moa-multimodel review /tmp/diff-366.patch 366")
     diff_path = parts[0]
-    pr_number = parts[1] if len(parts) > 1 else "manual"
+    pr_number = _validate_pr_number(parts[1] if len(parts) > 1 else "")
     if not Path(diff_path).exists():
         return f"❌ Diff file not found: {diff_path}"
 
@@ -211,27 +257,48 @@ def _handle_council_review(raw_args: str) -> str:
 
 
 def _setup_voice_prompts(diff_path: str, pr_number: str, repo_path: str) -> None:
-    """Write per-voice prompt files that council.sh sources."""
+    """Write per-voice prompt files. All interpolated values are shell-quoted
+    via shlex to prevent injection (diff_path/repo_path may come from env or
+    slash command args; pr_number is already validated by _validate_pr_number).
+    """
+    pr_number = _validate_pr_number(pr_number)
+
+    architect = (
+        f"MOA Architect review. Read diff at {diff_path} and verify by reading "
+        f"files at {repo_path}. PR #{pr_number}. Focus: correctness, idiomatic "
+        f"code, semantics, test intent regression. Return ONLY: APPROVE or "
+        f"REQUEST_CHANGES, 2-4 bullets. Be terse."
+    )
+    skeptic = (
+        f"MOA Skeptic review. Read {diff_path} and verify by reading files at "
+        f"{repo_path}. PR #{pr_number}. Focus: reasoning bugs, over-broad "
+        f"allowances, missed lints, hidden assumptions. Return ONLY: APPROVE "
+        f"or REQUEST_CHANGES, 2-4 bullets with file:line citations."
+    )
+    pragmatist = (
+        f"MOA Pragmatist review. Read diff at {diff_path} and files at "
+        f"{repo_path}. PR #{pr_number}. Focus: operator migration risk, "
+        f"runtime cost, scope creep, breaking changes. Return ONLY: APPROVE "
+        f"or REQUEST_CHANGES, 2-4 bullets. Be terse."
+    )
+    pragmatist_pipe = (
+        "MOA Pragmatist review. Diff summary in stdin. Return ONLY: APPROVE "
+        "or REQUEST_CHANGES, 2-4 bullets. Be terse."
+    )
+
+    diff_q = shlex.quote(diff_path)
     prompt_dir = Path("/tmp")
     (prompt_dir / "claude-cmd.sh").write_text(
-        f"""#!/bin/bash
-claude -p "MOA Architect review. Read diff at {diff_path} and verify by reading files at {repo_path}. PR #{pr_number}. Focus: correctness, idiomatic code, semantics, test intent regression. Return ONLY: APPROVE or REQUEST_CHANGES, 2-4 bullets. Be terse." --model sonnet
-"""
+        f"#!/bin/bash\nclaude -p {shlex.quote(architect)} --model sonnet\n"
     )
     (prompt_dir / "codex-cmd.sh").write_text(
-        f"""#!/bin/bash
-codex exec "MOA Skeptic review. Read {diff_path} and verify by reading files at {repo_path}. PR #{pr_number}. Focus: reasoning bugs, over-broad allowances, missed lints, hidden assumptions. Return ONLY: APPROVE or REQUEST_CHANGES, 2-4 bullets with file:line citations."
-"""
+        f"#!/bin/bash\ncodex exec {shlex.quote(skeptic)}\n"
     )
     (prompt_dir / "agy-cmd.sh").write_text(
-        f"""#!/bin/bash
-agy -p "MOA Pragmatist review. Read diff at {diff_path} and files at {repo_path}. PR #{pr_number}. Focus: operator migration risk, runtime cost, scope creep, breaking changes. Return ONLY: APPROVE or REQUEST_CHANGES, 2-4 bullets. Be terse."
-"""
+        f"#!/bin/bash\nagy -p {shlex.quote(pragmatist)}\n"
     )
     (prompt_dir / "agy-pipe-cmd.sh").write_text(
-        f"""#!/bin/bash
-cat {diff_path} | agy -p "MOA Pragmatist review. Diff summary in stdin. Return ONLY: APPROVE or REQUEST_CHANGES, 2-4 bullets. Be terse."
-"""
+        f"#!/bin/bash\ncat {diff_q} | agy -p {shlex.quote(pragmatist_pipe)}\n"
     )
     for f in ("claude-cmd.sh", "codex-cmd.sh", "agy-cmd.sh", "agy-pipe-cmd.sh"):
         (prompt_dir / f).chmod(0o755)
