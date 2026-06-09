@@ -189,7 +189,13 @@ def _on_pre_tool_call(
     if not tool_name:
         return None
 
-    session_id = session_id or os.environ.get("HERMES_SESSION_ID", "") or f"anon-{os.getpid():d}"
+    # FIX (moa-gate issue #367 CRITICAL #1 + Codex re-review #2): both the
+    # slash command and the pre_tool_call hook must agree on the session_id
+    # strategy. hooks/pre-commit.py only reads the legacy global state.json,
+    # so we always use session_id="" (legacy global path) — no per-session
+    # fallback. Per-session isolation can be added later by making the
+    # pre-commit hook aware of session_id.
+    session_id = session_id or os.environ.get("HERMES_SESSION_ID", "") or ""
 
     # Sync HMAC key from .env — keeps Hermes in sync if subprocess overwrote
     st.sync_key()
@@ -519,9 +525,15 @@ def _handle_approve(raw_args: str) -> str:
         return "❌ --reason is required."
 
     # Get session_id
+    # FIX (moa-gate issue #367 CRITICAL #1): slash command previously synthesized
+    # `anon-<pid>` when HERMES_SESSION_ID was empty, writing to per-session state
+    # files in `sessions/<anon>.json`. But `hooks/pre-commit.py:get_state_file()`
+    # only reads the legacy global `state.json` (line 24). The two paths never
+    # intersected, so slash-command approvals did not actually unlock commits.
+    # Fix: use empty session_id by default to write to the legacy global path
+    # that pre-commit.py reads. Per-session isolation can be added later by
+    # making pre-commit.py aware of session_id.
     session_id = os.environ.get("HERMES_SESSION_ID", "") or ""
-    if not session_id:
-        session_id = f"anon-{os.getpid():d}"
 
     try:
         st.approve(voices, reason, session_id)

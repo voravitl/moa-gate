@@ -96,13 +96,54 @@ def _load_or_generate_key() -> str:
                     if stored_key:
                         os.environ[ENV_KEY_NAME] = stored_key
                         logger.info("Loaded existing MOA_GATE_KEY from .env")
+                        # FIX (moa-gate issue #367 Codex re-review #3): existing
+                        # .env may have been written with default umask (0644)
+                        # before the chmod fix landed. Harden it now if needed.
+                        try:
+                            current_mode = env_path.stat().st_mode & 0o777
+                            if current_mode != 0o600:
+                                env_path.chmod(0o600)
+                                logger.info(
+                                    "Hardened existing .env from %03o to 0600",
+                                    current_mode,
+                                )
+                        except OSError as exc:
+                            logger.warning(
+                                "Could not harden existing %s: %s", env_path, exc
+                            )
                         return stored_key
 
+        # FIX (moa-gate issue #367 Codex re-review #3 + AGY TOCTOU #1 + edge case
+        # from final review): POSIX semantics: os.open(O_CREAT, mode=0o600) applies
+        # the mode ONLY when creating a new file. If the .env already exists (e.g.
+        # 0644 from a previous installation), O_APPEND will open the existing inode
+        # and the new key is written with the file's original 0644 mode. To close
+        # that gap, we also chmod the file after open() in the append path.
         key = secrets.token_hex(32)
-        with open(str(env_path), "a") as f:
-            f.write(f"\n{ENV_KEY_NAME}={key}\n")
+        # Capture whether the file already existed before open() so we know
+        # whether to apply an explicit chmod.
+        env_path_existed = env_path.exists()
+        fd = os.open(
+            str(env_path),
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+            0o600,
+        )
+        try:
+            os.write(fd, f"\n{ENV_KEY_NAME}={key}\n".encode("utf-8"))
+        finally:
+            os.close(fd)
+        # POSIX behavior: if the file already existed, O_CREAT is a no-op and
+        # the original inode (and its mode) is preserved. Always enforce 0o600
+        # after the write so newly-appended keys are never world-readable.
+        if env_path_existed:
+            try:
+                env_path.chmod(0o600)
+            except OSError as exc:
+                logger.warning(
+                    "Could not chmod 600 on existing %s: %s", env_path, exc
+                )
         os.environ[ENV_KEY_NAME] = key
-        logger.info("Generated new MOA_GATE_KEY in .env")
+        logger.info("Generated new MOA_GATE_KEY in .env (enforced 0600)")
     except Exception as exc:
         logger.error("Failed to persist MOA_GATE_KEY: %s", exc)
         raise RuntimeError("Cannot initialize MOA Gate — key generation failed") from exc
