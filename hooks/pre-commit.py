@@ -50,7 +50,7 @@ def verify_state() -> tuple:
 
     # Check state file exists
     if not state_path.exists():
-        return False, "MOA Gate: No state file found. Run /moa-approve first."
+        return False, "MOA Gate: No state file found. Run /moa-council-complete or /moa-emergency first."
 
     # Read state
     try:
@@ -65,7 +65,7 @@ def verify_state() -> tuple:
     # Fail-closed: approved but no expires_at = old format (v1), must re-approve
     # Check BEFORE HMAC verify because old format won't have expires_at in signature
     if data.get("status") == "approved" and "expires_at" not in data:
-        return False, "MOA Gate: State format outdated (no TTL). Re-approve with /moa-approve."
+        return False, "MOA Gate: State format outdated (no TTL). Re-approve with /moa-council-complete or /moa-emergency."
 
     # Check HMAC
     key = get_key()
@@ -90,12 +90,12 @@ def verify_state() -> tuple:
     # Check status
     status = data.get("status", "pending")
     if status != "approved":
-        return False, f"MOA Gate: Status is '{status}', not 'approved'. Run /moa-approve."
+        return False, f"MOA Gate: Status is '{status}', not 'approved'. Run /moa-council-complete or /moa-emergency."
 
     # Fail-closed: no expires_at = old format, must re-approve
     expires_at = data.get("expires_at")
     if not expires_at:
-        return False, "MOA Gate: State format outdated (no TTL). Re-approve with /moa-approve."
+        return False, "MOA Gate: State format outdated (no TTL). Re-approve with /moa-council-complete or /moa-emergency."
 
     # Check TTL expiry
     try:
@@ -104,9 +104,9 @@ def verify_state() -> tuple:
         now = datetime.now(timezone.utc)
         if now >= exp:
             mins_over = int((now - exp).total_seconds() / 60)
-            return False, f"MOA Gate: Approval EXPIRED {mins_over}min ago. Re-approve with /moa-approve."
+            return False, f"MOA Gate: Approval EXPIRED {mins_over}min ago. Re-approve with /moa-council-complete or /moa-emergency."
     except (ValueError, TypeError):
-        return False, "MOA Gate: Malformed expires_at. Re-approve with /moa-approve."
+        return False, "MOA Gate: Malformed expires_at. Re-approve with /moa-council-complete or /moa-emergency."
 
     # Show approval info + TTL remaining
     by = data.get("approved_by", [])

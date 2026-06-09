@@ -219,7 +219,7 @@ def _on_pre_tool_call(
                 "message": (
                     f"🛑 MOA Gate: Cool-down active until {cd}\n"
                     f"   Auto-approve is in cool-down period.\n"
-                    f"   To override: `/moa-approve --override --reason \"...\"`\n"
+                    f"   To override: `/moa-emergency --reason \"...\"`\n"
                     f"   Or wait for cool-down to expire."
                 ),
             }
@@ -235,7 +235,7 @@ def _on_pre_tool_call(
                     "🛑 MOA Gate: Shadow mode active — auto-approve recorded "
                     "but not executed.\n"
                     f"   Tool: {tool_name}\n"
-                    f"   Run `/moa-approve --by ... --reason \"...\"` for manual approval."
+                    f"   Run `/moa-emergency --reason \"...\"` for manual approval."
                 ),
             }
 
@@ -250,7 +250,8 @@ def _on_pre_tool_call(
                     "action": "block",
                     "message": (
                         "🛑 MOA Gate: Approval from different session. "
-                        "Run `/moa-revoke` then `/moa-approve`."
+                        "Run `/moa-revoke` then re-submit via `/moa-council-complete` "
+                        "or `/moa-emergency --reason \"...\"`."
                     ),
                 }
 
@@ -264,8 +265,9 @@ def _on_pre_tool_call(
             f"🛑 MOA Gate: Write tool blocked — \"{tool_name}\"\n"
             "  MOA council approval required.\n"
             "  ⏏ After approval, retry this operation immediately.\n"
-            "  Run `/moa-adviser` for a multi-model review, then:\n"
-            "  `/moa-approve --by <voices> --reason \"<reason>\"`"
+            "  Run `/moa-adviser` for a multi-model review, then submit:\n"
+            "  `/moa-council-complete '<json>'`\n"
+            "  Or for emergencies: `/moa-emergency --reason \"...\"`"
         )
     elif status == "rejected":
         msg = f"🛑 MOA Gate: Rejected — {state.get('reason', 'No reason')}"
@@ -344,8 +346,7 @@ def _handle_council_complete(raw_args: str) -> str:
         return (
             f"❌ Cannot auto-approve: {approved_count}/{total} "
             f"({pct:.0%}) below {AUTO_THRESHOLD:.0%} threshold.\n"
-            f"   Run `/moa-approve --by {','.join(approved_names)} "
-            f"--reason \"<reason>\"` for manual approval."
+            f"   For emergency override: `/moa-emergency --reason \"<reason>\"`"
         )
 
     # --- Step 2: Weighted veto ---
@@ -353,9 +354,8 @@ def _handle_council_complete(raw_args: str) -> str:
     if safety_dissent:
         return (
             f"🛑 Weighted veto: {', '.join(safety_dissent)} dissented.\n"
-            f"   Critic/Skeptic dissent requires manual approval.\n"
-            f"   Run `/moa-approve --by {','.join(approved_names)} "
-            f"--reason \"<reason>\"`"
+            f"   Critic/Skeptic dissent requires manual review.\n"
+            f"   For emergency override: `/moa-emergency --reason \"<reason>\"`"
         )
 
     # --- Step 3: Classify tier ---
@@ -367,9 +367,8 @@ def _handle_council_complete(raw_args: str) -> str:
     if final_tier == ti.TIER_2:
         return (
             f"📋 Council {approved_count}/{total} approve (Tier 2 — Manual)\n"
-            f"   Tier 2 change detected — requires human approval.\n"
-            f"   Run `/moa-approve --by {','.join(approved_names)} "
-            f"--reason \"<reason>\"`"
+            f"   Tier 2 change detected — requires human review.\n"
+            f"   For emergency override: `/moa-emergency --reason \"<reason>\"`"
         )
 
     # --- Step 4: Rate limit ---
@@ -379,7 +378,7 @@ def _handle_council_complete(raw_args: str) -> str:
                session_id=os.environ.get("HERMES_SESSION_ID", ""))
         return (
             f"⏳ Rate-limited: {AUTO_RATE_LIMIT} auto-approves/hour reached.\n"
-            f"   Wait or use `/moa-approve --by ... --reason \"...\"` for manual."
+            f"   Wait or use `/moa-emergency --reason \"...\"` for emergency bypass."
         )
 
     # --- Step 5: Shadow mode? ---
@@ -392,8 +391,7 @@ def _handle_council_complete(raw_args: str) -> str:
         return (
             f"👁️ Shadow mode: council {approved_count}/{total} approve (Tier {final_tier})\n"
             f"   Auto-approve recorded but NOT executed.\n"
-            f"   Run `/moa-approve --by {','.join(approved_names)} "
-            f"--reason \"<reason>\"` to execute."
+            f"   Run `/moa-emergency --reason \"<reason>\"` to execute."
         )
 
     # --- Step 6: Auto-approve! ---
@@ -425,7 +423,7 @@ def _handle_council_complete(raw_args: str) -> str:
         if COOLDOWN_SECS > 0:
             result += (
                 f"   ⏳ Cool-down: {COOLDOWN_SECS}s (auto-on expiry)\n"
-                f"   Override: `/moa-approve --override --reason \"...\"`\n"
+                f"   Override: `/moa-emergency --reason \"...\"`\n"
             )
         else:
             result += "\n   ⏏ Gate open — retry the blocked write operation now."
@@ -446,9 +444,6 @@ _HELP_TEXT = """\
 
 Subcommands:
   status                              Show current gate state
-  approve --by <voices>               Manual gate approval
-           --reason <text>             Reason for approval (required)
-           --override                  Override cool-down period
   council-complete '<json>'            Submit council results for auto-approve
                                        JSON fields: votes (required), task_description,
                                        dissent_reason, changed_paths, diff_keywords,
@@ -460,9 +455,7 @@ Subcommands:
   help                                This help
 
 Examples:
-  /moa-approve --by architect,critic,pragmatist --reason "Fix prod bug #123"
   /moa-council-complete '{"votes":{"a":"approve","c":"approve"},"task_description":"fix auth"}'
-  /moa-approve --override --reason "Hotfix — skip cooldown"
   /moa-emergency --reason "Production DNS outage — immediate hotfix"
   /moa-revoke
   /moa-log 20
@@ -485,90 +478,6 @@ def _get_last_blocked_tool(session_id: str) -> str:
     except Exception:
         pass
     return ""
-
-
-def _handle_approve(raw_args: str) -> str:
-    """Parse and execute approve command.
-
-    Supports:
-      /moa-approve --by voice1,voice2 --reason "..."
-      /moa-approve --override --reason "..."
-    """
-    # Check for --override first (bypass cool-down)
-    if "--override" in raw_args:
-        return _handle_override(raw_args)
-
-    # Standard approve
-    by_match = re.search(r"--by\s+([\w,\\-_.]+)", raw_args)
-    reason_match = re.search(r'--reason\s+"([^"]*)"|--reason\s+(\S+)', raw_args)
-
-    if not by_match:
-        return "❌ Usage: /moa-approve --by voice1,voice2 --reason \"...\"\n  Voices: comma-separated, e.g. architect,critic,pragmatist"
-
-    voices_raw = by_match.group(1)
-    voices = [v.strip() for v in voices_raw.split(",") if v.strip()]
-
-    if not voices:
-        return "❌ At least one voice required."
-
-    reason = ""
-    if reason_match:
-        reason = reason_match.group(1) or reason_match.group(2) or ""
-
-    if not reason:
-        return "❌ --reason is required."
-
-    # Get session_id
-    session_id = os.environ.get("HERMES_SESSION_ID", "") or ""
-    if not session_id:
-        session_id = f"anon-{os.getpid():d}"
-
-    try:
-        st.approve(voices, reason, session_id)
-        au.log("approve", by=voices, reason=reason, session_id=session_id)
-
-        voices_str = ", ".join(voices)
-        # Look up most recently blocked tool from audit log for retry hint
-        last_tool = _get_last_blocked_tool(session_id)
-        retry_hint = f"\n   ⏏ RETRY: {last_tool}" if last_tool else ""
-        return (
-            f"✅ MOA Gate APPROVED by {voices_str}\n"
-            f"   Reason: {reason}\n"
-            f"   Write tools are now allowed.{retry_hint}\n"
-            f"   ⏏ Gate open — retry the blocked operation now."
-        )
-    except Exception as exc:
-        au.log("error", reason=f"approve_failed: {exc}", session_id=session_id)
-        return f"❌ Approval failed: {exc}"
-
-
-def _handle_override(raw_args: str) -> str:
-    """Override cool-down period."""
-    reason_match = re.search(r'--reason\s+"([^"]*)"|--reason\s+(\S+)', raw_args)
-    reason = ""
-    if reason_match:
-        reason = reason_match.group(1) or reason_match.group(2) or ""
-
-    try:
-        session_id = os.environ.get("HERMES_SESSION_ID", "") or f"anon-{os.getpid():d}"
-        # Check if there's actually a cool-down to override
-        before = st.read(session_id)
-        had_cooldown = bool(before.get("cool_down_until"))
-        state = st.override_cooldown(override_by="human", session_id=session_id)
-        if not state.get("cool_down_until"):
-            if had_cooldown:
-                last_tool = _get_last_blocked_tool(session_id)
-                retry_hint = f"\n   ⏏ RETRY: {last_tool}" if last_tool else ""
-                au.log("override", reason=reason or "Cooldown overridden by human",
-                       session_id=session_id)
-                return (
-                    f"✅ Cool-down overridden!\n"
-                    f"   Write tools are now allowed immediately.{retry_hint}\n"
-                )
-            return "ℹ️  No active cool-down — nothing to override."
-        return "❌ Cool-down override failed — state unchanged."
-    except Exception as exc:
-        return f"❌ Override failed: {exc}"
 
 
 def _handle_emergency(raw_args: str) -> str:
@@ -627,7 +536,10 @@ def _handle_revoke(raw_args: str) -> str:
         session_id = os.environ.get("HERMES_SESSION_ID", "") or f"anon-{os.getpid():d}"
         st.revoke(reason, session_id=session_id)
         au.log("revoke", reason=reason, session_id=session_id)
-        return "🔄 MOA Gate REVOKED — reset to pending. Run `/moa-approve` when ready."
+        return (
+            "🔄 MOA Gate REVOKED — reset to pending. "
+            "Run `/moa-council-complete '<json>'` or `/moa-emergency --reason \"...\"` when ready."
+        )
     except Exception as exc:
         return f"❌ Revoke failed: {exc}"
 
@@ -684,8 +596,6 @@ def _handle_slash(raw_args: str) -> Optional[str]:
     # Support both /moa-gate <sub> and /moa-<sub> form
     if sub == "status":
         return _handle_status(" ".join(argv[1:]))
-    if sub in ("approve", "--approve"):
-        return _handle_approve(" ".join(argv[1:]))
     if sub in ("council-complete", "council"):
         return _handle_council_complete(" ".join(argv[1:]))
     if sub in ("revoke", "--revoke"):
@@ -764,11 +674,6 @@ def register(ctx) -> None:
     session_id = os.environ.get("HERMES_SESSION_ID", "") or f"anon-{os.getpid():d}"
     st.read(session_id)
 
-    ctx.register_command(
-        "moa-approve",
-        handler=_handle_approve,
-        description="Approve MOA gate for write tools (or --override for cooldown).",
-    )
     ctx.register_command(
         "moa-council-complete",
         handler=_handle_council_complete,
