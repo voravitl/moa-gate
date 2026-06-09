@@ -96,28 +96,60 @@ def _check_rate_limit() -> Tuple[bool, int]:
     """Check if auto-approve is within rate limit.
 
     Returns (allowed: bool, remaining_count: int).
-    Uses a simple JSON file with timestamps.
+    Uses a JSON file with timestamps, protected by fcntl.flock for
+    concurrent read-modify-write safety.
+
+    Concurrency: Without flock, two concurrent _handle_council_complete
+    calls can both pass the `len < AUTO_RATE_LIMIT` check before either
+    writes back, exceeding the rate cap. Verified by test_rate_limit_flock.
     """
     now = time.time()
     cutoff = now - AUTO_RATE_WINDOW
 
     try:
         RATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        if RATE_FILE.exists():
-            raw = RATE_FILE.read_text()
-            timestamps = json.loads(raw) if raw.strip() else []
-        else:
-            timestamps = []
+        # Acquire exclusive lock on a sidecar file. The lock is released
+        # automatically when the `with` block exits, even on exceptions.
+        # Pattern matches state.py:319-321 (`.state.lock`).
+        lock_path = RATE_FILE.parent / ".rate_counter.lock"
+        with open(str(lock_path), "w") as lock_f:
+            import fcntl
+            fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
+            try:
+                if RATE_FILE.exists():
+                    raw = RATE_FILE.read_text()
+                    timestamps = json.loads(raw) if raw.strip() else []
+                else:
+                    timestamps = []
 
-        # Prune old entries
-        timestamps = [ts for ts in timestamps if ts > cutoff]
+                # Prune old entries
+                timestamps = [ts for ts in timestamps if ts > cutoff]
 
-        allowed = len(timestamps) < AUTO_RATE_LIMIT
-        remaining = AUTO_RATE_LIMIT - len(timestamps)
+                allowed = len(timestamps) < AUTO_RATE_LIMIT
+                remaining = AUTO_RATE_LIMIT - len(timestamps)
 
-        if allowed:
-            timestamps.append(now)
-            RATE_FILE.write_text(json.dumps(timestamps))
+                if allowed:
+                    timestamps.append(now)
+                    # Atomic write (tempfile + replace) to avoid partial writes
+                    import tempfile
+                    import os
+                    fd, tmp_path = tempfile.mkstemp(
+                        dir=str(RATE_FILE.parent),
+                        prefix=".rate_tmp_",
+                        suffix=".json",
+                    )
+                    try:
+                        with os.fdopen(fd, "w") as f:
+                            json.dump(timestamps, f)
+                        os.replace(tmp_path, str(RATE_FILE))
+                    except Exception:
+                        try:
+                            os.unlink(tmp_path)
+                        except OSError:
+                            pass
+                        raise
+            finally:
+                fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
 
         return allowed, remaining
     except Exception as exc:
@@ -189,7 +221,13 @@ def _on_pre_tool_call(
     if not tool_name:
         return None
 
-    session_id = session_id or os.environ.get("HERMES_SESSION_ID", "") or f"anon-{os.getpid():d}"
+    # FIX (moa-gate issue #367 CRITICAL #1 + Codex re-review #2): both the
+    # slash command and the pre_tool_call hook must agree on the session_id
+    # strategy. hooks/pre-commit.py only reads the legacy global state.json,
+    # so we always use session_id="" (legacy global path) — no per-session
+    # fallback. Per-session isolation can be added later by making the
+    # pre-commit hook aware of session_id.
+    session_id = session_id or os.environ.get("HERMES_SESSION_ID", "") or ""
 
     # Sync HMAC key from .env — keeps Hermes in sync if subprocess overwrote
     st.sync_key()
