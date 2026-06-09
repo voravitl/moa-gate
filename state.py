@@ -181,7 +181,7 @@ def _parse_ttl(ttl_str: str) -> int:
     elif ttl_str.endswith("m"):
         seconds = int(ttl_str[:-1]) * 60
     else:
-        # Plain number = minutes (for backward compat with /moa-approve)
+        # Plain number = minutes (backward compat)
         try:
             seconds = int(ttl_str) * 60
         except ValueError:
@@ -547,7 +547,7 @@ def format_status(data: Dict[str, Any]) -> str:
         if is_cooldown:
             cd = data.get("cool_down_until", "")
             lines.append(f"   ⏳ Cool-down active until: {cd}")
-            lines.append(f"   (Override with: /moa-approve --override)")
+            lines.append(f"   (Override with: /moa-emergency --reason ...)")
         return "\n".join(lines)
     elif status == "pending":
         return "⏳ MOA Gate: PENDING — MOA review required before write tools"

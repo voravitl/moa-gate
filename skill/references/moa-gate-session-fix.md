@@ -65,7 +65,7 @@ hermes config set plugins.moa-gate.enabled false
 
 ## Prevention
 
-ตอน approve MoA ผ่าน `/moa-approve` — ให้ตรวจสอบว่า `session_id` ถูกเติมก่อน:
+ตอน approve MoA ผ่าน `/moa-council-complete` — ให้ตรวจสอบว่า `session_id` ถูกเติมก่อน:
 
 ```bash
 hermes moa status

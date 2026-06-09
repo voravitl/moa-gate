@@ -40,7 +40,7 @@ Added: `auto_approve`, `shadow_block`, `override`, `rate_limited`,
 ### 4. Plugin Hooks (`__init__.py`)
 
 - `/moa-council-complete '<json>'` — new entry point
-- `_handle_override()` — `--override` flag on `/moa-approve`
+- `_handle_emergency()` — `/moa-emergency --reason "..."` for ops-driven bypass
 - `_on_pre_tool_call()` — added cool-down check, shadow mode check
 
 ## Agent Flow After Council

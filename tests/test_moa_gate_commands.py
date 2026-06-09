@@ -3,8 +3,6 @@
 Covers:
   - _get_last_blocked_tool (ordering, cross-session isolation)
   - /moa-emergency (reason guard, approval, audit logging)
-  - /moa-approve (retry hint)
-  - /moa-approve --override (no-op detection, retry hint)
   - /moa-revoke (no redundant logic)
   - /moa-council-complete (council_hash computed)
   - Help text contains emergency subcommand
@@ -101,27 +99,6 @@ def test_emergency_approves_with_reason():
         os.environ["HERMES_SESSION_ID"] = "test-session-root"
 
 
-def test_override_noop_when_no_cooldown():
-    """Override without active cooldown says nothing to override."""
-    r = moa._handle_override('--reason "test"')
-    assert "nothing to override" in r or "No active" in r
-
-
-def test_override_shows_retry_hint():
-    """Override with cooldown shows tool-specific retry."""
-    sid = "test-override-hint"
-    os.environ["HERMES_SESSION_ID"] = sid
-    try:
-        au.log("block", tool="patch", session_id=sid)
-        st.approve(["test"], "setup", session_id=sid,
-                   cool_down_until="2099-01-01T00:00:00")
-        r = moa._handle_override('--reason "test"')
-        assert "Cool-down overridden" in r
-        assert "RETRY: patch" in r
-    finally:
-        os.environ["HERMES_SESSION_ID"] = "test-session-root"
-
-
 def test_revoke_works():
     """Basic revoke works."""
     r = moa._handle_revoke("")
@@ -135,19 +112,6 @@ def test_help_contains_emergency():
     """Help text mentions emergency."""
     assert "emergency" in moa._HELP_TEXT
     assert "EMERGENCY" in moa._HELP_TEXT
-
-
-def test_approve_retry_hint():
-    """Approve shows tool-specific retry."""
-    sid = "test-approve-hint"
-    os.environ["HERMES_SESSION_ID"] = sid
-    try:
-        au.log("block", tool="write_file", session_id=sid)
-        r = moa._handle_approve('--by architect,critic --reason "test retry"')
-        assert "approved" in r or "APPROVED" in r
-        assert "RETRY: write_file" in r
-    finally:
-        os.environ["HERMES_SESSION_ID"] = "test-session-root"
 
 
 def test_council_hash_not_auto():

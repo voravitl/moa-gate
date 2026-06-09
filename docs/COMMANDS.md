@@ -20,26 +20,6 @@
 
 ---
 
-### `/moa-gate approve [--override] [--by voices] [--reason text]`
-
-อนุมัติ write tool ด้วยตนเอง
-
-**Parameters:**
-
-| Parameter | Required | คำอธิบาย |
-|-----------|----------|---------|
-| `--by` | ✅ | รายชื่อ voices ที่ approve (comma-separated) |
-| `--reason` | ✅ | เหตุผล |
-| `--override` | ❌ | บังคับข้าม cool-down |
-
-**ตัวอย่าง:**
-```
-/moa-approve --by claude,codex --reason "refactor complete, reviewed by 2/3 voices"
-/moa-approve --override --reason "hotfix — production down"
-```
-
----
-
 ### `/moa-gate council-complete <JSON>` หรือ `/moa-council`
 
 ส่งผล council vote (JSON) — รองรับ auto-approve
@@ -154,7 +134,6 @@ vim ~/wiki/steering/security.yaml
 ┌─ MOA GATE ──────────────────────────────┐
 │                                         │
 │  /moa-status        → ดูสถานะ          │
-│  /moa-approve       → อนุมัติ           │
 │  /moa-council       → ส่งผล council    │
 │  /moa-revoke        → ยกเลิกอนุมัติ     │
 │  /moa-log           → audit log        │

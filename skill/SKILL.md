@@ -282,7 +282,7 @@ mkdir -p ~/wiki/lyn/moa-adviser
 echo "{verdict}" > ~/wiki/lyn/moa-adviser/$(date +%Y-%m-%d)-{slug}.md
 
 # Auto-approve (ถ้าเป็น council decision)
-/moa-approve --by "Architect,Strategist,Pragmatist" --reason "{topic}: {recommendation}"
+/moa-council-complete '{"votes":{"Architect":"approve","Strategist":"approve","Pragmatist":"approve"},"task_description":"{topic}: {recommendation}"}'
 ```
 
 ---

@@ -31,7 +31,7 @@ Step 1: Agent runs MOA council via delegate_task (5 voices)
 
 Step 2: Agent tells user:
         "Please run this in your Hermes CLI:
-         /moa-approve --by <voices> --reason \"<reason>\""
+         /moa-council-complete '{\"votes\":{...},\"task_description\":\"<reason>\"}'"
 
 Step 3: User runs the slash command
         → state.json gets HMAC-signed with session_id + TTL
@@ -45,7 +45,7 @@ Step 5: git commit passes pre-commit hook (checks state.json)
 
 ## Key Observations
 
-1. **agent cannot run `/moa-approve`** — it's a Hermes CLI slash command, not a tool
+1. **agent cannot run `/moa-council-complete`** — it's a Hermes CLI slash command, not a tool
 2. **state.json is at `~/.hermes/moa-gate/state.json`**, not inside the plugin dir
 3. **TTL is ~15 minutes** from approval — after that, tools block again
 4. **session_id must match** — state.json session_id vs HERMES_SESSION_ID
@@ -55,7 +55,7 @@ Step 5: git commit passes pre-commit hook (checks state.json)
 
 | User said | Meaning |
 |-----------|---------|
-| "ก็ทำสิ" | Expects agent to proceed, doesn't know agent can't run `/moa-approve` |
+| "ก็ทำสิ" | Expects agent to proceed, doesn't know agent can't run `/moa-council-complete` |
 | "MOA Gate because we skipped step?" | Confirmed they understood the protocol gap |
 | "งั้นก็ทำตามขั้นตอนไม่ข้าม" | Wants proper procedure, not shortcuts |
 
@@ -63,7 +63,7 @@ Step 5: git commit passes pre-commit hook (checks state.json)
 
 When MOA Gate blocks writes:
 1. DO run council review first (delegate_task or CLI mode)
-2. DO tell user explicitly to run `/moa-approve`
+2. DO tell user explicitly to run `/moa-council-complete`
 3. DO NOT assume council verdict text is sufficient
 4. DO NOT try to write state.json manually (HMAC fails)
 5. DO proceed fast within TTL window (~15 min)

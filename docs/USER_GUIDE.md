@@ -143,7 +143,7 @@ AI-DLC (AI-Driven Development Lifecycle) Compass เป็น plugin ที่�
    - ต้องมี credits API ครบ
    - Fallback: CLI mode → Cloud mode
 
-2. **รับผล council** → ส่ง `/moa-approve --by <voices>` หรือ `/moa-council-complete`
+2. **รับผล council** → ส่ง `/moa-council-complete '{"votes":{...}}'`
 
 3. เขียน code ได้ ✅
 
@@ -200,14 +200,14 @@ with open('$HOME/.hermes/ai-dlc/phase.json', 'w') as f:
 | Command | คำอธิบาย | ตัวอย่าง |
 |---------|---------|---------|
 | `/moa-gate status` | ดูสถานะ gate ปัจจุบัน | `/moa-gate status` |
-| `/moa-gate approve --by claude,codex --reason "refactor"` | อนุมัติ write tool ด้วยตนเอง | หลัง council เห็นชอบ |
 | `/moa-gate council-complete '{"votes":{...}}'` | ส่งผล council (JSON) | รองรับ auto-approve |
+| `/moa-gate emergency --reason "..."` | ฉุกเฉิน — bypass MOA Gate ด้วยตนเอง | DNS outage, hotfix |
 | `/moa-gate revoke` | ยกเลิกอนุมัติทั้งหมด | เมื่อเปลี่ยนใจ |
 | `/moa-gate log [limit]` | ดู audit log | `/moa-gate log 10` |
 | `/moa-gate verify` | ตรวจสอบความถูกต้องของ state | `/moa-gate verify` |
 | `/moa-gate help` | ดู help | `/moa-gate help` |
 
-**Short form:** ใช้ `/moa-status`, `/moa-approve`, `/moa-revoke`, `/moa-log`, `/moa-verify` ได้ด้วย
+**Short form:** ใช้ `/moa-status`, `/moa-council-complete`, `/moa-emergency`, `/moa-revoke`, `/moa-log`, `/moa-verify` ได้ด้วย
 
 ### AI-DLC Commands
 
@@ -314,7 +314,7 @@ MOA Gate ใช้ 2-tier classification สำหรับ council approval:
 ### Tier 2 (Manual only)
 
 - **เงื่อนไข:** มี Critic/Skeptic dissent หรือ path/reason ตรง Tier 2 patterns
-- **กระทำ:** ต้องรอ `/moa-approve --by human` เท่านั้น
+- **กระทำ:** ต้องรอ human ส่ง `/moa-council-complete` หรือใช้ `/moa-emergency` (พร้อม `--reason`)
 - **Tier 2 patterns:** auth, credential, password, secret, migration, schema, billing, payment, RBAC, user data, compliance, encryption
 
 ### Auto-approve Logic
@@ -352,7 +352,7 @@ MOA Gate ใช้ 2-tier classification สำหรับ council approval:
 **วิธีแก้:**
 ```bash
 # รอ cool-down หมด หรือ override
-/moa-approve --override --reason "ต้องแก้ด่วน"
+/moa-emergency --reason "ต้องแก้ด่วน — production hotfix"
 ```
 
 ---

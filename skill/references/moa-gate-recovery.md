@@ -8,7 +8,7 @@
 ┌─ Tool blocked ───────────────────────────────────┐
 │                                                    │
 │ 1. State missing/expired?                          │
-│    → `/moa-approve --by <voices> --reason "..."`   │
+│    → `/moa-council-complete '{"votes":{...}}'`     │
 │                                                    │
 │ 2. session_id mismatch?                            │
 │    → state.json session_id ≠ HERMES_SESSION_ID     │
@@ -82,7 +82,7 @@ MOA Gate plugin intercepts **tool calls** (`patch`, `write_file`, `terminal` wit
 ### ใช้ bypass เมื่อ
 
 - MOA Gate block patch/write_file/terminal
-- State approval ถูก consume หรือไม่สามารถ approve ผ่าน `/moa-approve` ได้
+- State approval ถูก consume หรือไม่สามารถ approve ผ่าน `/moa-council-complete` ได้
 - HMAC key mismatch หรือ state corrupt
 - ต้องการแก้ plugin เองแต่ถูก block โดย plugin ตัวเอง (circular dependency)
 

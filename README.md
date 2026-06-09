@@ -128,7 +128,7 @@ python3 -m pytest tests/ -v
 ```
 /moa-gate status          → ดูสถานะ
 /moa-gate council-complete  → ส่งผล council
-/moa-approve                → อนุมัติ write tools
+/moa-emergency              → bypass ฉุกเฉิน (ต้องมี --reason)
 /moa-revoke                 → ยกเลิกอนุมัติ
 /moa-log                    → ดู audit log
 /moa-verify                 → ตรวจ state

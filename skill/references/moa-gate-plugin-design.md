@@ -37,7 +37,7 @@ Layer 2 — Defense-in-depth (Hermes plugin + git hooks)
 Layer 3 — UX (Hermes plugin, weakest but most visible)
 ├── pre_tool_call hook: block write tools
 ├── Skill auto-load: teach AI workflow
-├── Slash commands: /moa-approve, /moa-revoke
+├── Slash commands: /moa-council-complete, /moa-emergency, /moa-revoke
 └── Block list: catches honest mistakes
 ```
 
