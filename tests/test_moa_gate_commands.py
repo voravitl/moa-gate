@@ -138,16 +138,18 @@ def test_help_contains_emergency():
 
 
 def test_approve_retry_hint():
-    """Approve shows tool-specific retry."""
-    sid = "test-approve-hint"
-    os.environ["HERMES_SESSION_ID"] = sid
-    try:
-        au.log("block", tool="write_file", session_id=sid)
-        r = moa._handle_approve('--by architect,critic --reason "test retry"')
-        assert "approved" in r or "APPROVED" in r
-        assert "RETRY: write_file" in r
-    finally:
-        os.environ["HERMES_SESSION_ID"] = "test-session-root"
+    """Approve shows tool-specific retry.
+
+    After the deploy-regression fix, /moa-approve always uses session_id=""
+    (legacy global) so it sees blocks logged to the global session, not
+    per-session HERMES_SESSION_ID. Test logs the block to session_id=""
+    and verifies the retry hint surfaces.
+    """
+    sid = ""  # Global session — slash command ignores HERMES_SESSION_ID
+    au.log("block", tool="write_file", session_id=sid)
+    r = moa._handle_approve('--by architect,critic --reason "test retry"')
+    assert "approved" in r or "APPROVED" in r
+    assert "RETRY: write_file" in r
 
 
 def test_council_hash_not_auto():
