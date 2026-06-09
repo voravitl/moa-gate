@@ -19,10 +19,28 @@ TIER_1 = 1  # Auto-approve (if council ≥80%)
 TIER_2 = 2  # Manual approve only
 
 # Paths / keywords that ALWAYS trigger Tier 2
-TIER_2_PATTERNS = re.compile(
+#
+# FIX (moa-gate issue #371 + MOA Adviser HIGH #4): the original regex lacked
+# word boundaries around high-FP terms. "remove unused imports", "clear console
+# output", "delete temp test fixture", and "next_token" / "tokenizer" all
+# matched `remove|clear|delete|token` and forced Tier 2 manual approval.
+#
+# Strategy: TWO separate regexes, picked per input type:
+#   * `TIER_2_PATH_PATTERNS` (no word boundaries): used for changed_paths.
+#     Paths have natural delimiters (`/`, `.`, `-`) and the conservative match
+#     is acceptable. False positives rare; false negatives dangerous.
+#   * `TIER_2_FREETEXT_PATTERNS` (with word boundaries): used for task
+#     descriptions and diff keywords. Free text contains compound words where
+#     `remove`/`clear`/`delete`/`token` are common identifiers, so we use
+#     strict boundaries to prevent FPs.
+#   * High-stakes terms (auth, password, secret, credential, schema, etc.):
+#     kept in BOTH patterns — false negatives are worse than false positives.
+#
+# Tests: tests/test_tier_wordboundaries.py
+TIER_2_PATH_PATTERNS = re.compile(
     r"(?i)"
-    # Security & auth
     r"(?:"
+    # Security & auth
     r"auth|authenticate|authorize|rbac|permission|credential|"
     r"password|secret|token|api.?key|encrypt|decrypt|cipher|"
     r"certificate|ssl|tls|oauth|jwt|session|login|logout|"
@@ -35,7 +53,7 @@ TIER_2_PATTERNS = re.compile(
     # Production infra
     r"deploy|release|production|rollback|rollout|"
     r"kubernetes|k8s|docker|dockerfile|terraform|helm|"
-    # Data loss
+    # Data loss (paths often have these as directory names)
     r"delete|remove|purge|wipe|clear|truncate|"
     r"backup|restore|recovery|disaster.?recovery|"
     # Compliance
@@ -45,6 +63,45 @@ TIER_2_PATTERNS = re.compile(
     r"enterprise|tenant|multi.?tenant"
     r")"
 )
+
+
+# Free-text patterns: word boundaries around high-FP compound-word terms.
+# Notice: `token` is now \\btoken\\b, `delete`/`remove`/`clear`/`purge`/`wipe`
+# have word boundaries to prevent matches in `next_token`, `remove_unused`,
+# `clear_cache`, `delete_temp_fixture` etc.
+TIER_2_FREETEXT_PATTERNS = re.compile(
+    r"(?i)"
+    r"(?:"
+    # Security & auth
+    r"auth|authenticate|authorize|rbac|permission|credential|"
+    r"password|secret|api.?key|encrypt|decrypt|cipher|"
+    r"certificate|ssl|tls|oauth|jwt|login|logout|"
+    r"\bsession\b|"  # "session" as standalone (not "sessionStorage" in JS)
+    r"\btoken\b|"     # bounded: no match in "next_token", "tokenizer", "tokenize"
+    # Database schema
+    r"migration|schema|ddl|alter\s+table|drop\s+|truncate|"
+    r"create\s+table|add\s+column|remove\s+column|"
+    # Billing / finance
+    r"billing|payment|invoice|pricing|subscription|credit|"
+    r"refund|charge|cost|wallet|balance|"
+    # Production infra
+    r"deploy|release|production|rollback|rollout|"
+    r"kubernetes|k8s|docker|dockerfile|terraform|helm|"
+    # Data loss (bounded to prevent FPs)
+    r"\bdelete\b|\bremove\b|\bclear\b|\bpurge\b|\bwipe\b|"
+    r"backup|restore|recovery|disaster.?recovery|"
+    # Compliance
+    r"audit|compliance|gdp[rr]|pcidss|sox|hipaa|pci|"
+    # Enterprise tools
+    r"byok|kms|hsm|key.?management|"
+    r"enterprise|tenant|multi.?tenant"
+    r")"
+)
+
+
+# Backward-compat alias — keep the old name pointing to the path regex
+# so any external code that imports TIER_2_PATTERNS still works.
+TIER_2_PATTERNS = TIER_2_PATH_PATTERNS
 
 
 def classify_by_keywords(
@@ -64,20 +121,21 @@ def classify_by_keywords(
     Returns:
         TIER_1 or TIER_2
     """
-    # Check task description
-    if task_description and TIER_2_PATTERNS.search(task_description):
+    # Check task description (use free-text regex with word boundaries)
+    if task_description and TIER_2_FREETEXT_PATTERNS.search(task_description):
         return TIER_2
 
-    # Check paths
+    # Check paths (use path regex without word boundaries — paths have
+    # natural delimiters and conservative matching is safer here)
     if changed_paths:
         for path in changed_paths:
-            if TIER_2_PATTERNS.search(path):
+            if TIER_2_PATH_PATTERNS.search(path):
                 return TIER_2
 
-    # Check diff keywords
+    # Check diff keywords (treat as free-text — word boundaries)
     if diff_keywords:
         for kw in diff_keywords:
-            if TIER_2_PATTERNS.search(kw):
+            if TIER_2_FREETEXT_PATTERNS.search(kw):
                 return TIER_2
 
     return TIER_1

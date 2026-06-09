@@ -524,16 +524,18 @@ def _handle_approve(raw_args: str) -> str:
     if not reason:
         return "❌ --reason is required."
 
-    # Get session_id
-    # FIX (moa-gate issue #367 CRITICAL #1): slash command previously synthesized
-    # `anon-<pid>` when HERMES_SESSION_ID was empty, writing to per-session state
-    # files in `sessions/<anon>.json`. But `hooks/pre-commit.py:get_state_file()`
-    # only reads the legacy global `state.json` (line 24). The two paths never
-    # intersected, so slash-command approvals did not actually unlock commits.
-    # Fix: use empty session_id by default to write to the legacy global path
-    # that pre-commit.py reads. Per-session isolation can be added later by
-    # making pre-commit.py aware of session_id.
-    session_id = os.environ.get("HERMES_SESSION_ID", "") or ""
+    # FIX (moa-gate issue #367 CRITICAL #1 + Codex re-review #2 + deploy regression):
+    # slash command and pre_tool_call hook must agree on session_id strategy.
+    # hooks/pre-commit.py only reads the legacy global state.json, so we
+    # always use session_id="" (legacy global path) — IGNORE HERMES_SESSION_ID
+    # for this write. This is the only safe approach while the pre-commit hook
+    # is session-unaware. Per-session isolation requires updating pre-commit.py
+    # to also read session state, which is a separate change (see #369 in LYN).
+    #
+    # NOTE: This means approvals via /moa-approve are GLOBAL — they unlock
+    # commits for the entire user, not per-session. Operators using multiple
+    # parallel sessions must be aware of this.
+    session_id = ""
 
     try:
         st.approve(voices, reason, session_id)
