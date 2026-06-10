@@ -86,11 +86,15 @@ def get_active_rules_for_path(path: str) -> dict:
         applicable = []
         for rule in cat_rules:
             patterns = rule.get("path_patterns", [".*"])
-            try:
-                matches = [re.search(p, path) for p in patterns]
-            except re.error:
-                logger.warning("bad path_pattern regex in rule %s", rule.get("id", "?"))
-                matches = [True]  # allow on error (fail-open)
+            matches = []
+            for p in patterns:
+                try:
+                    matches.append(re.search(p, path))
+                except re.error:
+                    logger.warning(
+                        "bad path_pattern regex in rule %s, pattern %r — skipping",
+                        rule.get("id", "?"), p,
+                    )
             if any(matches):
                 applicable.append(rule)
         if applicable:

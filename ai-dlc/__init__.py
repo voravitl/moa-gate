@@ -103,6 +103,10 @@ def _write_json(path: Path, data: dict) -> None:
             os.fsync(fd)
         os.replace(tmp, str(path))
     except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
         os.unlink(tmp)
         raise
 
@@ -217,15 +221,16 @@ def pre_tool_call(tool_name: str, args: dict) -> Optional[dict]:
         elif tool_name == "process":
             content_arg = args.get("data", "")
 
+    # Assign synthetic path BEFORE phase check so INCEPTION gate sees it
+    if not path_arg and content_arg:
+        path_arg = f"/tmp/{tool_name}-payload.sh"
+
     current_phase = ph.get_phase()
     patch_paths = [patch_path for patch_path, _ in patch_payloads]
     if current_phase == "INCEPTION" and (
         _is_code_file(str(path_arg)) or any(_is_code_file(patch_path) for patch_path in patch_paths)
     ):
         return {"block": True, "message": "🚫 AI-DLC PHASE BLOCK: Still in INCEPTION.\nUse /ai-dlc phase promote"}
-
-    if not path_arg and content_arg:
-        path_arg = f"/tmp/{tool_name}-payload.sh"
 
     for patch_path, patch_payload in patch_payloads:
         violations = vr.verify_content(patch_payload, patch_path)
@@ -391,7 +396,7 @@ def _cmd_verify(filepath: str) -> str:
         with open(expanded) as f:
             content = f.read()
         result = vr.verify_content(content, expanded)
-        if result["passed"]:
+        if not result["critical"] and not result["warning"]:
             return f"✅ Steering PASSED for {filepath}"
         parts = [f"⚠️ Violations in {filepath}:\n"]
         for v in result.get("critical", []):

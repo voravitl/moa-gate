@@ -332,5 +332,141 @@ class DynamicHomeTest(unittest.TestCase):
             self.assertEqual(result["critical"][0]["rule_id"], "DYNAMIC-HOME")
 
 
+class RegistryPatternTest(unittest.TestCase):
+    def test_mixed_patterns_skips_malformed_matches_valid(self):
+        """Registry fix: one valid + one malformed pattern must match only valid paths."""
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            steering = home / "wiki" / "steering"
+            steering.mkdir(parents=True)
+            (steering / "security.yaml").write_text(
+                'rules:\n'
+                '  - id: MIXED-PAT\n'
+                '    description: mixed patterns\n'
+                '    type: deny_pattern\n'
+                '    pattern: secret\n'
+                '    severity: warning\n'
+                '    suggestion: fix\n'
+                "    path_patterns: ['[', '.*\\.py$']\n"
+            )
+            plugin = load_ai_dlc(home)
+            # Valid pattern matches .py
+            rules_py = plugin.sr.get_active_rules_for_path("/src/app.py")
+            matched_py = any(
+                r["id"] == "MIXED-PAT"
+                for cat_rules in rules_py.values()
+                for r in cat_rules
+            )
+            self.assertTrue(matched_py, "valid pattern should match .py file")
+            # .txt must NOT match (malformed skipped; valid .py$ doesn't hit .txt)
+            rules_txt = plugin.sr.get_active_rules_for_path("/src/readme.txt")
+            matched_txt = any(
+                r["id"] == "MIXED-PAT"
+                for cat_rules in rules_txt.values()
+                for r in cat_rules
+            )
+            self.assertFalse(matched_txt, "malformed pattern must not cause match-all")
+
+    def test_all_malformed_patterns_matches_nothing(self):
+        """Registry fix: rule with only malformed patterns must match nothing."""
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            steering = home / "wiki" / "steering"
+            steering.mkdir(parents=True)
+            (steering / "security.yaml").write_text(
+                'rules:\n'
+                '  - id: ALL-BAD\n'
+                '    description: all bad patterns\n'
+                '    type: deny_pattern\n'
+                '    pattern: secret\n'
+                '    severity: warning\n'
+                '    suggestion: fix\n'
+                "    path_patterns: ['[', '(unclosed']\n"
+            )
+            plugin = load_ai_dlc(home)
+            rules = plugin.sr.get_active_rules_for_path("/src/app.py")
+            matched = any(
+                r["id"] == "ALL-BAD"
+                for cat_rules in rules.values()
+                for r in cat_rules
+            )
+            self.assertFalse(matched, "all-malformed patterns must not cause match-all")
+
+
+class InceptionBypassTest(unittest.TestCase):
+    def test_write_with_content_no_path_blocked_in_inception(self):
+        """INCEPTION bypass fix: write with content but NO path key must be blocked."""
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            plugin = load_ai_dlc(home)
+            plugin._mark_steering_loaded()
+            plugin.ph.set_phase("INCEPTION", "test")
+            result = plugin.pre_tool_call(
+                "write_file",
+                {"content": "#!/bin/bash\nrm -rf /"},  # no "path" key
+            )
+            self.assertIsNotNone(result)
+            self.assertTrue(result.get("block"), "content-only write must be blocked in INCEPTION")
+            self.assertIn("INCEPTION", result.get("message", ""))
+
+
+class VerifyConsistencyTest(unittest.TestCase):
+    def test_verify_does_not_claim_passed_with_warnings(self):
+        """Verify fix: _cmd_verify must NOT claim PASSED when only warnings exist."""
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            steering = home / "wiki" / "steering"
+            steering.mkdir(parents=True)
+            (steering / "security.yaml").write_text(
+                'rules:\n'
+                '  - id: WARN-RULE\n'
+                '    description: warning rule\n'
+                '    type: deny_pattern\n'
+                '    pattern: cors_wildcard_marker\n'
+                '    severity: warning\n'
+                '    suggestion: fix cors\n'
+                "    path_patterns: ['.*\\.py$']\n"
+            )
+            plugin = load_ai_dlc(home)
+            plugin._mark_steering_loaded()
+            tmpfile = Path(td) / "app.py"
+            tmpfile.write_text("cors_wildcard_marker = True")
+            result = plugin._cmd_verify(str(tmpfile))
+            self.assertNotIn("✅", result, "_cmd_verify must not emit ✅ when warnings exist")
+            self.assertNotIn("PASSED", result, "_cmd_verify must not say PASSED when warnings exist")
+
+
+class Sec004Test(unittest.TestCase):
+    def test_safe_list_subprocess_not_flagged(self):
+        """SEC-004 fix: subprocess.run(['git','status']) list form must NOT be flagged."""
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            plugin = load_ai_dlc(home)
+            result = plugin.vr.verify_content(
+                'subprocess.run(["git", "status"])',
+                "src/app.py",
+            )
+            sec004 = [
+                v for v in result.get("critical", []) + result.get("warning", [])
+                if v["rule_id"] == "SEC-004"
+            ]
+            self.assertEqual(sec004, [], "safe list-form subprocess.run must not trigger SEC-004")
+
+    def test_shell_true_subprocess_flagged(self):
+        """SEC-004 fix: subprocess.run('cmd', shell=True) must be flagged."""
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            plugin = load_ai_dlc(home)
+            result = plugin.vr.verify_content(
+                "subprocess.run('rm -rf /', shell=True)",
+                "src/app.py",
+            )
+            sec004 = [
+                v for v in result.get("critical", []) + result.get("warning", [])
+                if v["rule_id"] == "SEC-004"
+            ]
+            self.assertGreater(len(sec004), 0, "shell=True subprocess.run must trigger SEC-004")
+
+
 if __name__ == "__main__":
     unittest.main()

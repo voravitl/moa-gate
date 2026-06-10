@@ -69,6 +69,10 @@ def _write_phase(data: dict):
             os.fsync(fd)
         os.replace(tmp, str(_phase_file()))
     except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
         os.unlink(tmp)
         raise
 

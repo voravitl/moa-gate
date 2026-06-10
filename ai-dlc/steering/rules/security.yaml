@@ -29,7 +29,7 @@ rules:
     pattern: '@validate|validate_request|Validator|is_valid|sanitize|pydantic|serde::Deserialize'
     severity: critical
     suggestion: "เพิ่ม input validation middleware หรือ decorator ก่อนรับ user input"
-    path_patterns: ['.*\.(py|rs|ts)$']
+    path_patterns: ['.*/(routes?|api|endpoints?|controllers?|handlers?)/.*\.(py|rs|ts)$']
     tags: [security, input-validation]
 
   - id: SEC-003
@@ -44,16 +44,16 @@ rules:
   - id: SEC-004
     description: "ห้ามใช้ eval() หรือ exec() หรือ eval-like functions"
     type: deny_pattern
-    pattern: '\beval\(|\bexec\(|\b__import__\(|\bcompile\(|subprocess\.(call|run|Popen|check_output)'
+    pattern: '\beval\(|\bexec\(|\b__import__\(|\bcompile\(|subprocess\.(call|run|Popen|check_output)\s*\(.*shell\s*=\s*True'
     severity: critical
     suggestion: "ใช้ safer alternatives — ast.literal_eval, subprocess.run(list_of_args)"
     path_patterns: ['.*\.py$']
     tags: [security, code-injection]
 
   - id: SEC-005
-    description: "SQL queries ต้อง use parameterized queries, not string interpolation"
+    description: "SQL queries ต้อง use parameterized queries, not string interpolation (note: concatenation forms are out of scope)"
     type: deny_pattern
-    pattern: '(?:execute|query|raw|run)\s*\(\s*[''\"](?:SELECT|INSERT|UPDATE|DELETE).*\{.*\}'
+    pattern: '(?:execute|query|raw|run)\s*\(\s*[frbu]*[''\"](?:SELECT|INSERT|UPDATE|DELETE).*\{.*\}'
     severity: critical
     suggestion: "ใช้ parameterized queries เสมอ — sqlx::query!, ? placeholders"
     path_patterns: ['.*\.(py|rs|ts|go|java)$']
