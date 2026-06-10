@@ -129,3 +129,118 @@ def test_council_hash_not_auto():
         assert h and h != "auto", f"Expected real hash, got {h!r}"
     finally:
         os.environ["HERMES_SESSION_ID"] = "test-session-root"
+
+
+# ---------------------------------------------------------------------------
+# Quorum tests
+# ---------------------------------------------------------------------------
+
+def test_quorum_rejection_one_vote():
+    """1 vote → quorum not met, no auto-approve."""
+    council_json = json.dumps({
+        "votes": {"architect": "approve"},
+        "task_description": "test quorum one",
+    })
+    r = moa._handle_council_complete(council_json)
+    assert "Quorum not met" in r
+    assert "1 voice" in r
+    assert "MOA_GATE_MIN_COUNCIL_SIZE" in r
+
+
+def test_quorum_rejection_two_votes():
+    """2 votes → quorum not met (default min=3), no auto-approve."""
+    council_json = json.dumps({
+        "votes": {"architect": "approve", "planner": "approve"},
+        "task_description": "test quorum two",
+    })
+    r = moa._handle_council_complete(council_json)
+    assert "Quorum not met" in r
+    assert "2 voice" in r
+
+
+def test_quorum_met_three_votes_proceeds():
+    """3 votes (= MIN_COUNCIL_SIZE) does not trigger quorum error."""
+    council_json = json.dumps({
+        "votes": {"a": "approve", "b": "approve", "c": "approve"},
+        "task_description": "test quorum exact",
+    })
+    r = moa._handle_council_complete(council_json)
+    assert "Quorum not met" not in r
+
+
+# ---------------------------------------------------------------------------
+# Safety veto normalization tests
+# ---------------------------------------------------------------------------
+
+def test_safety_veto_request_changes_from_critic():
+    """critic voting REQUEST_CHANGES with 80% approve quorum → weighted veto fires."""
+    # 5 voices: 4 approve + critic=REQUEST_CHANGES = 80% threshold exactly
+    sid = "test-critic-request-changes"
+    os.environ["HERMES_SESSION_ID"] = sid
+    try:
+        council_json = json.dumps({
+            "votes": {
+                "architect": "approve",
+                "planner": "approve",
+                "executor": "approve",
+                "reviewer": "approve",
+                "critic": "REQUEST_CHANGES",
+            },
+            "task_description": "test critic veto via REQUEST_CHANGES",
+        })
+        r = moa._handle_council_complete(council_json)
+        assert "veto" in r.lower() or "dissent" in r.lower(), (
+            f"Expected safety veto, got: {r!r}"
+        )
+        # Must NOT auto-approve
+        assert "Auto-approved" not in r
+    finally:
+        os.environ["HERMES_SESSION_ID"] = "test-session-root"
+
+
+def test_safety_veto_reject_from_skeptic():
+    """skeptic voting 'reject' → weighted veto fires."""
+    sid = "test-skeptic-reject"
+    os.environ["HERMES_SESSION_ID"] = sid
+    try:
+        council_json = json.dumps({
+            "votes": {
+                "architect": "approve",
+                "planner": "approve",
+                "executor": "approve",
+                "reviewer": "approve",
+                "skeptic": "reject",
+            },
+            "task_description": "test skeptic veto via reject",
+        })
+        r = moa._handle_council_complete(council_json)
+        assert "veto" in r.lower() or "dissent" in r.lower(), (
+            f"Expected safety veto, got: {r!r}"
+        )
+        assert "Auto-approved" not in r
+    finally:
+        os.environ["HERMES_SESSION_ID"] = "test-session-root"
+
+
+# ---------------------------------------------------------------------------
+# Shadow mode rate-token test
+# ---------------------------------------------------------------------------
+
+def test_shadow_mode_does_not_consume_rate_token(tmp_path, monkeypatch):
+    """Shadow mode returns early before rate-limit; rate file must not be written."""
+    rate_file = tmp_path / ".rate_counter.json"
+    monkeypatch.setattr(moa, "RATE_FILE", rate_file)
+    monkeypatch.setattr(moa, "SHADOW_MODE", True)
+    sid = "test-shadow-no-rate"
+    monkeypatch.setenv("HERMES_SESSION_ID", sid)
+
+    council_json = json.dumps({
+        "votes": {"a": "approve", "b": "approve", "c": "approve"},
+        "task_description": "shadow rate test",
+    })
+    r = moa._handle_council_complete(council_json)
+
+    assert "Shadow mode" in r, f"Expected shadow mode response, got: {r!r}"
+    assert not rate_file.exists(), (
+        "Rate counter file must NOT be written when shadow mode returns early"
+    )

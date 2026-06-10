@@ -76,6 +76,28 @@ class TestTerminalWhitelistBypass:
     def test_pytest_allowed(self):
         assert _is_whitelisted("pytest tests/")
 
+    # --- $ variable expansion hardening ---
+
+    def test_dollar_var_echo_blocked(self):
+        """$HOME expansion in echo must be blocked."""
+        assert not _is_whitelisted("echo $HOME")
+
+    def test_dollar_var_cat_blocked(self):
+        """$SECRET_FILE expansion must be blocked."""
+        assert not _is_whitelisted("cat $SECRET_FILE")
+
+    def test_dollar_var_git_log_author_blocked(self):
+        """$USER expansion in git log must be blocked."""
+        assert not _is_whitelisted("git log --author=$USER")
+
+    def test_clean_echo_no_dollar_allowed(self):
+        """echo without $ is still whitelisted."""
+        assert _is_whitelisted("echo hello")
+
+    def test_clean_git_log_no_dollar_allowed(self):
+        """git log without $ is still whitelisted."""
+        assert _is_whitelisted("git log --oneline")
+
 
 # ---------------------------------------------------------------------------
 # FIX 2: rate limiter fail-closed on I/O error

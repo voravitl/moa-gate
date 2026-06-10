@@ -78,8 +78,9 @@ TERMINAL_READONLY_PATTERNS = re.compile(
 
 # Reject shell metacharacters anywhere in the command before consulting
 # the read-only whitelist — newlines defeat the start-anchored match,
-# and backticks/$( ) run subcommands even in "read-only" commands
-TERMINAL_SHELL_META = re.compile(r"[\n\r|;&<>`]|\$\(")
+# backticks run subcommands and $ expands variables ($VAR, $(...))
+# even in "read-only" commands
+TERMINAL_SHELL_META = re.compile(r"[\n\r|;&<>`$]")
 
 # Auto-approve settings (can be overridden via env)
 AUTO_THRESHOLD = float(os.environ.get("MOA_GATE_AUTO_THRESHOLD", "0.8"))  # 80%
@@ -88,6 +89,7 @@ AUTO_RATE_WINDOW = 3600  # 1 hour in seconds
 SHADOW_MODE = os.environ.get("MOA_GATE_SHADOW_MODE", "0") == "1"
 COOLDOWN_SECS = int(os.environ.get("MOA_GATE_COOLDOWN_SECS", "120"))
 SAFETY_ROLES = frozenset({"critic", "skeptic"})
+MIN_COUNCIL_SIZE = int(os.environ.get("MOA_GATE_MIN_COUNCIL_SIZE", "3"))
 
 # Rate limiter state file
 RATE_FILE = Path.home() / ".hermes" / "moa-gate" / ".rate_counter.json"
@@ -187,7 +189,7 @@ def _create_dissent_issue(dissented: List[str], council_result: Dict[str, Any]) 
         f"**Tier:** Auto (≥80% majority)\n\n"
         f"**Action required:** Review dissent feedback and resolve before merge."
     )
-    title = f"MOA Dissent: {task_desc[:60]}"
+    title = f"MOA Dissent: {task_desc[:47]}"
 
     au.log("dissent_issue", reason=body, by=dissented)
 
@@ -380,11 +382,18 @@ def _handle_council_complete(raw_args: str) -> str:
         mode_warning = "\n🎯 MOA Tool mode — real 5 models ต่างบริษัท\n"
 
     total = len(votes)
-    approved_names = [v for v, s in votes.items() if s == "approve"]
-    dissented_names = [v for v, s in votes.items() if s == "dissent"]
+    approved_names = [v for v, s in votes.items() if s.strip().lower() == "approve"]
+    dissented_names = [v for v, s in votes.items() if s.strip().lower() != "approve"]
     approved_count = len(approved_names)
 
     pct = approved_count / total if total > 0 else 0.0
+
+    # --- Quorum check ---
+    if total < MIN_COUNCIL_SIZE:
+        return (
+            f"❌ Quorum not met: {total} voice(s), minimum {MIN_COUNCIL_SIZE} required "
+            f"(MOA_GATE_MIN_COUNCIL_SIZE)"
+        )
 
     # --- Step 1: Check threshold ---
     if pct < AUTO_THRESHOLD:
@@ -416,17 +425,7 @@ def _handle_council_complete(raw_args: str) -> str:
             f"   For emergency override: `/moa-emergency --reason \"<reason>\"`"
         )
 
-    # --- Step 4: Rate limit ---
-    allowed, remaining = _check_rate_limit()
-    if not allowed:
-        au.log("rate_limited", by=approved_names, reason=f"rate_limit_hit",
-               session_id=os.environ.get("HERMES_SESSION_ID", ""))
-        return (
-            f"⏳ Rate-limited: {AUTO_RATE_LIMIT} auto-approves/hour reached.\n"
-            f"   Wait or use `/moa-emergency --reason \"...\"` for emergency bypass."
-        )
-
-    # --- Step 5: Shadow mode? ---
+    # --- Step 4: Shadow mode? ---
     session_id = os.environ.get("HERMES_SESSION_ID", "") or f"anon-{os.getpid():d}"
     council_hash = hashlib.sha256(json.dumps(council, sort_keys=True).encode()).hexdigest()[:12]
 
@@ -437,6 +436,16 @@ def _handle_council_complete(raw_args: str) -> str:
             f"👁️ Shadow mode: council {approved_count}/{total} approve (Tier {final_tier})\n"
             f"   Auto-approve recorded but NOT executed.\n"
             f"   Run `/moa-emergency --reason \"<reason>\"` to execute."
+        )
+
+    # --- Step 5: Rate limit ---
+    allowed, remaining = _check_rate_limit()
+    if not allowed:
+        au.log("rate_limited", by=approved_names, reason=f"rate_limit_hit",
+               session_id=session_id)
+        return (
+            f"⏳ Rate-limited: {AUTO_RATE_LIMIT} auto-approves/hour reached.\n"
+            f"   Wait or use `/moa-emergency --reason \"...\"` for emergency bypass."
         )
 
     # --- Step 6: Auto-approve! ---
