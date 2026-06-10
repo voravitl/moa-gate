@@ -8,10 +8,10 @@ auto-approves the subsequent commit.
 Workflow:
 1. User runs `gh pr create` (or `/moa-multimodel review` manually)
 2. pre_tool_call hook intercepts, runs `scripts/council.sh` which:
-   a. Captures the diff to /tmp/moa-multimodel-auto-diff.patch
+   a. Captures the diff to a per-run private temp file (mkstemp)
    b. Calls claude -p, codex exec, agy -p in sequence (with retry on rate limit)
    c. Extracts verdicts (APPROVE / REQUEST_CHANGES)
-   d. Writes per-voice comment to /tmp/pr-<N>-<voice>.md
+   d. Writes per-voice comment to <run-dir>/pr-<N>-<voice>.md
 3. After council completes, hook posts comments + adds labels to PR
 4. Hook writes state.json via moa-gate's state.approve()
 5. moa-gate pre-commit hook sees approved state, allows git commit
@@ -42,6 +42,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -188,8 +189,11 @@ def _on_pre_tool_call(
         if diff_proc.returncode != 0:
             logger.warning("moa-multimodel: git diff failed: %s", diff_proc.stderr)
             return None  # Don't block — let moa-gate handle if needed
-        diff_path = "/tmp/moa-multimodel-auto-diff.patch"
-        Path(diff_path).write_text(diff_proc.stdout)
+        fd, diff_path = tempfile.mkstemp(
+            prefix="moa-multimodel-diff-", suffix=".patch"
+        )
+        with os.fdopen(fd, "w") as f:
+            f.write(diff_proc.stdout)
     except Exception as exc:
         logger.warning("moa-multimodel: diff capture failed: %s", exc)
         return None
@@ -199,14 +203,16 @@ def _on_pre_tool_call(
 
     # Auto-trigger fires at gh_pr_create time — the PR does not exist yet,
     # so we pass "manual" so council.sh skips the gh-pr-comment block.
-    _setup_voice_prompts(diff_path, "manual", repo_path)
+    run_dir = _setup_voice_prompts(diff_path, "manual", repo_path)
 
     # Run the council script
     try:
         result = subprocess.run(
             ["bash", _COUNCIL_SCRIPT, diff_path, "manual"],
             capture_output=True, text=True, timeout=900,  # 15 min
-            env={**os.environ, "MOA_GATE_PLUGIN_PATH": _resolve_moa_gate_path()},
+            env={**os.environ,
+                 "MOA_GATE_PLUGIN_PATH": _resolve_moa_gate_path(),
+                 "MOA_RUN_DIR": run_dir},
         )
         logger.info("moa-multimodel council: exit=%d\n%s",
                     result.returncode, result.stdout[-2000:])
@@ -252,13 +258,15 @@ def _handle_council_review(raw_args: str) -> str:
         return f"❌ Diff file not found: {diff_path}"
 
     repo_path = _resolve_repo_path() or os.getcwd()
-    _setup_voice_prompts(diff_path, pr_number, repo_path)
+    run_dir = _setup_voice_prompts(diff_path, pr_number, repo_path)
 
     try:
         result = subprocess.run(
             ["bash", _COUNCIL_SCRIPT, diff_path, pr_number],
             capture_output=True, text=True, timeout=900,
-            env={**os.environ, "MOA_GATE_PLUGIN_PATH": _resolve_moa_gate_path()},
+            env={**os.environ,
+                 "MOA_GATE_PLUGIN_PATH": _resolve_moa_gate_path(),
+                 "MOA_RUN_DIR": run_dir},
         )
         return (
             f"🛡️ MOA Multi-Model Council: exit={result.returncode}\n\n"
@@ -268,10 +276,19 @@ def _handle_council_review(raw_args: str) -> str:
         return f"❌ Council script failed: {exc}"
 
 
-def _setup_voice_prompts(diff_path: str, pr_number: str, repo_path: str) -> None:
-    """Write per-voice prompt files. All interpolated values are shell-quoted
-    via shlex to prevent injection (diff_path/repo_path may come from env or
-    slash command args; pr_number is already validated by _validate_pr_number).
+def _setup_voice_prompts(diff_path: str, pr_number: str, repo_path: str) -> str:
+    """Write per-voice prompt files into a per-run private temp directory.
+
+    Creates a fresh directory via mkdtemp (prefix "moa-multimodel-") so each
+    run is fully isolated.  Fixed /tmp paths were pre-creatable by other local
+    users (symlink/TOCTOU attack); per-run dirs eliminate that risk.
+
+    All interpolated values are shell-quoted via shlex to prevent injection
+    (diff_path/repo_path may come from env or slash command args; pr_number is
+    already validated by _validate_pr_number).
+
+    Returns the path to the per-run directory so callers can pass it as
+    MOA_RUN_DIR to council.sh.
     """
     pr_number = _validate_pr_number(pr_number)
 
@@ -299,21 +316,22 @@ def _setup_voice_prompts(diff_path: str, pr_number: str, repo_path: str) -> None
     )
 
     diff_q = shlex.quote(diff_path)
-    prompt_dir = Path("/tmp")
-    (prompt_dir / "claude-cmd.sh").write_text(
+    run_dir = Path(tempfile.mkdtemp(prefix="moa-multimodel-"))
+    (run_dir / "claude-cmd.sh").write_text(
         f"#!/bin/bash\nclaude -p {shlex.quote(architect)} --model sonnet\n"
     )
-    (prompt_dir / "codex-cmd.sh").write_text(
+    (run_dir / "codex-cmd.sh").write_text(
         f"#!/bin/bash\ncodex exec {shlex.quote(skeptic)}\n"
     )
-    (prompt_dir / "agy-cmd.sh").write_text(
+    (run_dir / "agy-cmd.sh").write_text(
         f"#!/bin/bash\nagy -p {shlex.quote(pragmatist)}\n"
     )
-    (prompt_dir / "agy-pipe-cmd.sh").write_text(
+    (run_dir / "agy-pipe-cmd.sh").write_text(
         f"#!/bin/bash\ncat {diff_q} | agy -p {shlex.quote(pragmatist_pipe)}\n"
     )
     for f in ("claude-cmd.sh", "codex-cmd.sh", "agy-cmd.sh", "agy-pipe-cmd.sh"):
-        (prompt_dir / f).chmod(0o755)
+        (run_dir / f).chmod(0o755)
+    return str(run_dir)
 
 
 _HELP = """\

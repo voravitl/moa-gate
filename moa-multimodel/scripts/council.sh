@@ -6,16 +6,28 @@
 # Usage: council.sh <diff-file> [pr-number]
 #
 # Output (stdout): human-readable summary
-# Output (files):  /tmp/pr-<N>-{architect,skeptic,pragmatist}.md
-#                  /tmp/moa-status (KEY=VALUE lines for state file)
+# Output (files):  $RUN_DIR/pr-<N>-{architect,skeptic,pragmatist}.md
+#                  $RUN_DIR/moa-status (VERDICT|voice[|reason] lines)
 #
 # Env:
+#   MOA_RUN_DIR          — per-run private dir holding voice cmd files;
+#                          created via mktemp -d if unset
 #   MOA_GATE_PLUGIN_PATH — path to moa-gate plugin (defaults to
 #                          sibling dir, then ~/.hermes/plugins/moa-gate)
 set -e
 
 DIFF=${1:?"Usage: $0 <diff-file> [pr-number]"}
 PR=${2:-"manual"}
+
+# Per-run private working dir — fixed /tmp paths collide between
+# concurrent runs and are pre-creatable/symlinkable by other local users
+# (the cmd files in it get executed via bash)
+RUN_DIR="${MOA_RUN_DIR:-}"
+if [ -z "$RUN_DIR" ]; then
+  RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/moa-council.XXXXXX")
+fi
+chmod 700 "$RUN_DIR"
+STATUS_FILE="$RUN_DIR/moa-status"
 
 # Resolve moa-gate plugin path: env > sibling dir > ~/.hermes
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -48,10 +60,10 @@ is_empty() {
 run_voice() {
   local voice=$1
   local cmd_file=$2
-  local verdict_file="/tmp/pr-${PR}-${voice}.md"
+  local verdict_file="$RUN_DIR/pr-${PR}-${voice}.md"
 
   if [ ! -f "$cmd_file" ]; then
-    echo "SKIPPED|$voice|cmd_file_missing" >> /tmp/moa-status
+    echo "SKIPPED|$voice|cmd_file_missing" >> "$STATUS_FILE"
     return 0
   fi
 
@@ -67,17 +79,17 @@ run_voice() {
       exit_code=0
       out=$(bash "$cmd_file" 2>&1) || exit_code=$?
       if [ $exit_code -ne 0 ] || is_empty "$out" || is_rate_limit "$out"; then
-        echo "ESCALATED|$voice|rate_limit_after_retry" >> /tmp/moa-status
+        echo "ESCALATED|$voice|rate_limit_after_retry" >> "$STATUS_FILE"
         return 0
       fi
     else
-      echo "HARD_FAIL|$voice|exit_$exit_code" >> /tmp/moa-status
+      echo "HARD_FAIL|$voice|exit_$exit_code" >> "$STATUS_FILE"
       return 0
     fi
   fi
 
   if is_empty "$out"; then
-    echo "EMPTY|$voice|no_output" >> /tmp/moa-status
+    echo "EMPTY|$voice|no_output" >> "$STATUS_FILE"
     return 0
   fi
 
@@ -102,18 +114,18 @@ run_voice() {
     echo "**Verdict: $verdict**"
   } > "$verdict_file"
 
-  echo "$verdict|$voice" >> /tmp/moa-status
+  echo "$verdict|$voice" >> "$STATUS_FILE"
 }
 
 # ── Entry ───────────────────────────────────────────────────────────
 exit_code=0
-rm -f /tmp/moa-status
-touch /tmp/moa-status
+rm -f "$STATUS_FILE"
+touch "$STATUS_FILE"
 
 # Run all 3 voices
-run_voice architect /tmp/claude-cmd.sh
-run_voice skeptic   /tmp/codex-cmd.sh
-run_voice pragmatist /tmp/agy-cmd.sh
+run_voice architect "$RUN_DIR/claude-cmd.sh"
+run_voice skeptic   "$RUN_DIR/codex-cmd.sh"
+run_voice pragmatist "$RUN_DIR/agy-cmd.sh"
 
 # ── Compose verdict ────────────────────────────────────────────────
 approve_count=0
@@ -147,10 +159,11 @@ while IFS='|' read -r verdict voice _; do
       verdict_summary="${verdict_summary}${voice}=ESCALATED "
       ;;
   esac
-done < /tmp/moa-status
+done < "$STATUS_FILE"
 
 echo ""
 echo "=== MOA Council Summary (PR #${PR}) ==="
+echo "Run dir: ${RUN_DIR}"
 echo "Substantive verdicts: ${total_substantive}/3"
 echo "Approvals: ${approve_count}"
 echo "Escalated/empty: ${escalated_count}"
@@ -200,14 +213,18 @@ fi
 # ── Post PR comments if PR number provided ─────────────────────────
 if [ "$PR" != "manual" ] && command -v gh >/dev/null 2>&1; then
   for voice in architect skeptic pragmatist; do
-    f="/tmp/pr-${PR}-${voice}.md"
+    f="$RUN_DIR/pr-${PR}-${voice}.md"
     if [ -f "$f" ]; then
       gh pr comment "$PR" --body-file "$f" 2>/dev/null || true
-      case "$voice" in
-        architect) gh pr edit "$PR" --add-label moa-claude-approved 2>/dev/null || true ;;
-        skeptic)   gh pr edit "$PR" --add-label moa-codex-approved 2>/dev/null || true ;;
-        pragmatist) gh pr edit "$PR" --add-label moa-agy-approved 2>/dev/null || true ;;
-      esac
+      # Label only on an actual APPROVE — a REQUEST_CHANGES/UNCLEAR
+      # verdict must not get a "*-approved" label
+      if grep -q "Verdict: APPROVE" "$f"; then
+        case "$voice" in
+          architect) gh pr edit "$PR" --add-label moa-claude-approved 2>/dev/null || true ;;
+          skeptic)   gh pr edit "$PR" --add-label moa-codex-approved 2>/dev/null || true ;;
+          pragmatist) gh pr edit "$PR" --add-label moa-agy-approved 2>/dev/null || true ;;
+        esac
+      fi
     fi
   done
   echo "Posted ${total_substantive} PR comment(s) and labels"
