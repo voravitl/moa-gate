@@ -15,6 +15,7 @@ import hmac
 import hashlib
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -32,6 +33,9 @@ def get_state_file() -> Path:
 
     If HERMES_SESSION_ID is set and the per-session file exists, return it.
     Otherwise fall back to the global state.json (fail-closed default).
+
+    NOTE: verify_state() uses its own fallback logic (session → global); this
+    helper is retained for external callers and documentation purposes.
 
     # Mirrors state.py:state_file_for_session — keep in sync
     """
@@ -64,14 +68,21 @@ def get_key() -> str:
     return key
 
 
-def verify_state() -> tuple:
-    """Verify MOA gate state file.
+def _verify_one(state_path: Path, *, require_session_match: bool = False) -> tuple:
+    """Verify a single state file.
+
+    Args:
+        state_path: Path to the state file to verify.
+        require_session_match: When True, enforce that the state's stored
+            session_id (if any) matches HERMES_SESSION_ID. Used for the global
+            state path — per-session file paths already encode the session via
+            filename, so they skip this check.
 
     Returns:
         (ok: bool, message: str)
-    """
-    state_path = get_state_file()
 
+    # Mirrors _on_pre_tool_call checks in __init__.py — keep in sync
+    """
     # Check state file exists
     if not state_path.exists():
         return False, "MOA Gate: No state file found. Run /moa-council-complete or /moa-emergency first."
@@ -122,21 +133,50 @@ def verify_state() -> tuple:
         return False, "MOA Gate: State format outdated (no TTL). Re-approve with /moa-council-complete or /moa-emergency."
 
     # Check TTL expiry
+    now = datetime.now(timezone.utc)
     try:
-        from datetime import datetime, timezone
         exp = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-        now = datetime.now(timezone.utc)
-        if now >= exp:
-            mins_over = int((now - exp).total_seconds() / 60)
-            return False, f"MOA Gate: Approval EXPIRED {mins_over}min ago. Re-approve with /moa-council-complete or /moa-emergency."
     except (ValueError, TypeError):
         return False, "MOA Gate: Malformed expires_at. Re-approve with /moa-council-complete or /moa-emergency."
 
-    # Show approval info + TTL remaining
+    if now >= exp:
+        mins_over = int((now - exp).total_seconds() / 60)
+        return False, f"MOA Gate: Approval EXPIRED {mins_over}min ago. Re-approve with /moa-council-complete or /moa-emergency."
+
+    # ---- Cool-down check ----
+    # Keep in sync with state.py:is_in_cooldown and __init__.py:_on_pre_tool_call
+    cool_down_until = data.get("cool_down_until")
+    override_by = data.get("override_by", "")
+    if cool_down_until and not override_by:
+        try:
+            deadline = datetime.fromisoformat(cool_down_until.replace("Z", "+00:00"))
+            if now < deadline:
+                return False, (
+                    f"🛑 MOA Gate: Cool-down active until {cool_down_until}\n"
+                    f"   Auto-approve is in cool-down period.\n"
+                    f"   To override: `/moa-emergency --reason \"...\"`\n"
+                    f"   Or wait for cool-down to expire."
+                )
+        except (ValueError, TypeError):
+            pass  # Malformed cool_down_until — treat as inactive (fail-open for invalid value)
+
+    # ---- Session-match guard for global state ----
+    # Keep in sync with __init__.py:_on_pre_tool_call allowed_session logic
+    if require_session_match:
+        stored_session = data.get("session_id", "")
+        if stored_session:
+            current_session = os.environ.get("HERMES_SESSION_ID", "").strip()
+            if current_session and current_session != stored_session:
+                return False, (
+                    "🛑 MOA Gate: Approval from different session. "
+                    "Run `/moa-revoke` then re-submit via `/moa-council-complete` "
+                    "or `/moa-emergency --reason \"...\"`."
+                )
+
+    # All checks passed — format success message
     by = data.get("approved_by", [])
     reason = data.get("reason", "")
     at = data.get("approved_at", "?")
-    session = data.get("session_id", "")
 
     try:
         remaining = int((exp - now).total_seconds() / 60)
@@ -153,6 +193,44 @@ def verify_state() -> tuple:
     )
 
     return True, msg
+
+
+def verify_state() -> tuple:
+    """Verify MOA gate state with session-file-first, global-fallback logic.
+
+    Priority:
+      1. If HERMES_SESSION_ID is set and per-session file exists → verify it.
+      2. If session-file verification fails for ANY reason (expired, tampered,
+         corrupt) → also verify the global state.json. Commit passes if EITHER
+         is valid (an emergency global approval must unlock commits even when a
+         stale session file is present).
+      3. No session file present → verify global state.json only.
+
+    # Mirrors _on_pre_tool_call in __init__.py — keep in sync
+    """
+    home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
+    global_path = Path(home) / "moa-gate" / "state.json"
+
+    session_id = os.environ.get("HERMES_SESSION_ID", "").strip()
+    safe = _safe_session_id(session_id)
+
+    if safe:
+        session_path = Path(home) / "moa-gate" / "sessions" / f"{safe}.json"
+        if session_path.exists():
+            # Verify session file (no session-match check — filename already scopes to session)
+            ok, msg = _verify_one(session_path, require_session_match=False)
+            if ok:
+                return True, msg
+            # Session file failed — fall back to global emergency approval
+            # A valid global approval must still unlock commits (stale-session-file fix)
+            session_fail_msg = msg
+            ok_global, msg_global = _verify_one(global_path, require_session_match=True)
+            if ok_global:
+                return True, msg_global
+            return False, f"{session_fail_msg}\n   (Also checked global state: {msg_global})"
+
+    # No per-session file — check global state only
+    return _verify_one(global_path, require_session_match=True)
 
 
 def main():
