@@ -208,6 +208,16 @@ def _on_pre_tool_call(
         )
         logger.info("moa-multimodel council: exit=%d\n%s",
                     result.returncode, result.stdout[-2000:])
+        if result.returncode == 2:
+            return {
+                "action": "block",
+                "message": (
+                    "🛑 MOA Multi-Model: fewer than 2 substantive council "
+                    "voices — manual review required.\n"
+                    "   Run `/moa-multimodel review "
+                    f"{diff_path}` to retry."
+                ),
+            }
     except subprocess.TimeoutExpired:
         return {
             "action": "block",

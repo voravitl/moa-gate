@@ -55,16 +55,17 @@ run_voice() {
     return 0
   fi
 
+  # `|| exit_code=$?` keeps set -e from killing the script on voice failure
   local out
-  out=$(bash "$cmd_file" 2>&1)
-  local exit_code=$?
+  local exit_code=0
+  out=$(bash "$cmd_file" 2>&1) || exit_code=$?
 
   if [ $exit_code -ne 0 ]; then
     if is_rate_limit "$out"; then
       echo "=== RATE LIMIT on $voice (waiting 60s, retry ONCE) ==="
       sleep 60
-      out=$(bash "$cmd_file" 2>&1)
-      exit_code=$?
+      exit_code=0
+      out=$(bash "$cmd_file" 2>&1) || exit_code=$?
       if [ $exit_code -ne 0 ] || is_empty "$out" || is_rate_limit "$out"; then
         echo "ESCALATED|$voice|rate_limit_after_retry" >> /tmp/moa-status
         return 0
@@ -103,6 +104,7 @@ run_voice() {
 }
 
 # ── Entry ───────────────────────────────────────────────────────────
+exit_code=0
 rm -f /tmp/moa-status
 touch /tmp/moa-status
 
@@ -117,7 +119,7 @@ escalated_count=0
 total_substantive=0
 verdict_summary=""
 
-while IFS='|' read -r verdict voice; do
+while IFS='|' read -r verdict voice _; do
   case "$verdict" in
     APPROVE)
       approve_count=$((approve_count + 1))
@@ -156,7 +158,7 @@ if [ $approve_count -ge 2 ] && [ $total_substantive -ge 2 ]; then
     APPROVE_COUNT="$approve_count" \
     TOTAL_SUB="$total_substantive" \
     PR_NUM="$PR" \
-    python3 - <<'PYEOF'
+    python3 - <<'PYEOF' || echo "⚠️  Continuing despite state update failure"
 import os, sys
 sys.path.insert(0, os.environ["MOA_GATE_PLUGIN_PATH"])
 try:
@@ -196,4 +198,4 @@ if [ "$PR" != "manual" ] && command -v gh >/dev/null 2>&1; then
   echo "Posted ${total_substantive} PR comment(s) and labels"
 fi
 
-exit 0
+exit "$exit_code"
