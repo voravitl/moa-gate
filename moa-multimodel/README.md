@@ -10,14 +10,16 @@ for PR review.
 gh pr create (or /moa-multimodel review)
     │
     ▼
-┌─ moa-multimodel ──────────────────────────────┐
-│ 1. git diff main...HEAD → /tmp/diff.patch     │
-│ 2. Write per-voice prompts to /tmp/*-cmd.sh   │
-│ 3. council.sh runs claude + codex + agy       │
-│ 4. Extract verdict (APPROVE / REQUEST_CHANGES)│
-│ 5. Post PR comments + labels                  │
-└──────────────────┬────────────────────────────┘
-                   │ 2/3 approve
+┌─ moa-multimodel ──────────────────────────────────┐
+│ 1. git diff main...HEAD → /tmp/diff.patch        │
+│ 2. RUN_DIR = mktemp -d (per-run private dir)    │
+│ 3. Write per-voice prompts to $RUN_DIR/*-cmd.sh │
+│ 4. council.sh runs claude + codex + agy         │
+│ 5. Extract verdict (last keyword wins)          │
+│ 6. Post PR comments + labels (APPROVE only)     │
+│ 7. Safety-role dissent blocks auto-approve      │
+└──────────────────┬────────────────────────────────┘
+                   │ 2/3 approve & no dissent
                    ▼
 ┌─ moa-gate (sibling plugin) ───────────────────┐
 │ state.approve() → state.json (HMAC signed)    │
@@ -52,11 +54,11 @@ gh pr create (or /moa-multimodel review)
 
 ## Fail-back
 
-- claude rate limit → wait 60s, retry ONCE, else escalate
-- codex rate limit → same
-- agy silent fail → env/credential issue, NOT retry
-- 2/3 substantive voices = sufficient signal
-- <2 substantive = blocks (need manual review)
+- **Rate limit**: detect via first 5 lines of output, wait 60s, retry ONCE
+- **UNCLEAR verdicts**: escalated with label `voice=UNCLEAR` in summary
+- **Safety-role dissent**: skeptic REQUEST_CHANGES withholds auto-approve even at 2/3
+- **2/3 approve & no dissent** → auto-write state.json
+- **<2 substantive voices** → exit 2, block PR (needs manual review)
 
 ## Installation
 

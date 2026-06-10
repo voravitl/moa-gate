@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-10 | Updated: 2026-06-10 -->
+<!-- Generated: 2026-06-10 | Updated: 2026-06-10 | Behavior: per-run private RUN_DIR, verdict extraction, safety-role dissent, exit codes, labels only on APPROVE -->
 
 # moa-multimodel
 
@@ -24,10 +24,11 @@ Generator side of the MOA review pipeline. Spawns three real CLI models — Clau
 
 ### Working In This Directory
 
-- **Shell injection prevention**: `_validate_pr_number()` in `__init__.py` rejects any PR identifier that does not match `^[A-Za-z0-9_-]+$`, substituting `"manual"`. All paths written into `/tmp/*-cmd.sh` prompt files are wrapped with `shlex.quote()` before interpolation.
-- **Voice prompt files** are written to `/tmp/{claude,codex,agy,agy-pipe}-cmd.sh` by `_setup_voice_prompts()`. These are executable bash wrappers that pass a single fully-quoted string argument to the respective CLI. Never pass raw user input or unsanitized paths into these templates.
+- **Shell injection prevention**: `_validate_pr_number()` in `__init__.py` rejects any PR identifier that does not match `^[A-Za-z0-9_-]+$`, substituting `"manual"`. All paths written into voice cmd files are wrapped with `shlex.quote()` before interpolation.
+- **Voice prompt files** are written to `$RUN_DIR/{claude,codex,agy}-cmd.sh` by `_setup_voice_prompts()`. These are executable bash wrappers that pass a single fully-quoted string argument to the respective CLI. Never pass raw user input or unsanitized paths into these templates.
+- **Per-run private RUN_DIR**: `council.sh` uses env `MOA_RUN_DIR` or creates a secure temp dir via `mktemp -d` with `chmod 700`. This prevents collision between concurrent runs and symlinking attacks on fixed `/tmp` paths. Voice cmd files and verdict files live in this directory.
 - **Default branch resolution**: `_resolve_default_branch()` probes `origin/HEAD` symref first, then falls back to `main`/`master` probe. Do not hardcode `main` in new diff-capture logic.
-- **Never block the PR**: the `pre_tool_call` hook returns `None` (allow) after council runs; only a council timeout or 0/3 substantive verdicts returns `{"action": "block", ...}`.
+- **Never block the PR**: the `pre_tool_call` hook returns `None` (allow) after council runs; only `exit 2` (fewer than 2 substantive voices) returns `{"action": "block", ...}`.
 - **Auto-trigger can be disabled**: set `MOA_MULTIMODEL_AUTOTRIGGER=0` in env before testing to avoid unintended council runs.
 
 ### Testing Requirements

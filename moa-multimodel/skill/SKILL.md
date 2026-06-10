@@ -20,26 +20,27 @@ moa-gate is the *verifier* side.
 
 ## What it does on activation
 1. Captures `git diff main...HEAD` to `/tmp/moa-multimodel-auto-diff.patch`
-2. Writes per-voice prompt files to `/tmp/{claude,codex,agy}-cmd.sh`
-3. Runs `scripts/council.sh <diff> <pr>` which:
+2. Creates per-run private RUN_DIR (via `mktemp -d`, `chmod 700`)
+3. Writes per-voice prompt files to `$RUN_DIR/{claude,codex,agy}-cmd.sh`
+4. Runs `scripts/council.sh <diff> <pr>` which:
    a. Calls `claude -p "..." --model sonnet` (Architect)
    b. Calls `codex exec "..."` (Skeptic)
    c. Calls `agy -p "..."` (Pragmatist)
-   d. Each with rate-limit detection + 60s retry ONCE
-4. Extracts verdict (APPROVE / REQUEST_CHANGES / ESCALATED)
-5. Posts PR comments + adds `moa-{claude,codex,agy}-approved` labels
-6. If 2/3 approve, writes moa-gate `state.json` via `state.approve()`
-7. moa-gate's pre-commit hook sees approved state → allows next `git commit`
+   d. Each with rate-limit detection (first 5 lines) + 60s retry ONCE
+5. Extracts verdict (last standalone keyword wins; APPROVED→APPROVE; else→UNCLEAR)
+6. Posts PR comments + adds `moa-{claude,codex,agy}-approved` labels only on APPROVE verdicts
+7. **Safety-role dissent**: skeptic REQUEST_CHANGES blocks auto-approve even at 2/3
+8. If 2/3 approve AND no dissent, writes moa-gate `state.json` via `state.approve()`
+9. moa-gate's pre-commit hook sees approved state → allows next `git commit`
 
-## Fail-back (verified 2026-06-08)
-- **claude** rate limit: exit 130/124 OR stderr matches RATE_LIMIT_PATTERNS
+## Fail-back (verified 2026-06-10)
+- **Rate limit**: detect via first 5 lines of output matching RATE_LIMIT_PATTERNS
   → wait 60s, retry ONCE, else escalate
-- **codex** rate limit: same detection, same retry, same escalation
-- **agy** silent fail (exit 0, 0 bytes): env/credential issue, NOT rate
-  limit, do NOT retry
-- 2/3 substantive voices = sufficient signal
-- 1/3 or fewer = block (need manual)
-- 0/3 due to all rate-limited = STOP, do not commit
+- **UNCLEAR verdicts**: escalated (no APPROVE/REQUEST_CHANGES keyword found)
+- **Safety-role dissent**: skeptic REQUEST_CHANGES withholds auto-approve even at 2/3; non-safety dissent allows auto-approve
+- **2/3 substantive voices & no dissent** → auto-write state.json
+- **<2 substantive voices** → exit 2, block PR (need manual review)
+- **Verdict files**: written to `$RUN_DIR/pr-<N>-<voice>.md`; labels added only when "Verdict: APPROVE" present
 
 ## Slash commands
 - `/moa-multimodel review <diff> [pr]` — manual run

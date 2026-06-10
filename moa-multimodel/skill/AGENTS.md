@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-10 | Updated: 2026-06-10 -->
+<!-- Generated: 2026-06-10 | Updated: 2026-06-10 | Behavior: per-run RUN_DIR, SKILL.md in sync with council.sh -->
 
 # skill/
 
@@ -29,7 +29,8 @@ Contains `SKILL.md`, the Hermes skill definition that makes this plugin auto-dis
 ## Dependencies
 
 ### Internal
-- Documents the interface of `__init__.py` (slash commands, env vars, hook behavior) and `scripts/council.sh` (verdict semantics, rate-limit retry).
+- Documents the interface of `__init__.py` (slash commands, env vars, hook behavior) and `scripts/council.sh` (per-run RUN_DIR, verdict extraction, safety-role dissent, exit codes, labels).
+- Must stay in sync with council.sh behavior: RUN_DIR, verdict keywords, safety-role dissent, exit code 2 semantics, label logic.
 
 ### External
 None — this directory contains only a markdown file.
