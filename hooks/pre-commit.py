@@ -18,10 +18,34 @@ import sys
 from pathlib import Path
 
 
+def _safe_session_id(session_id: str) -> str:
+    """Return a filesystem-safe session id for per-session state files.
+
+    # Mirrors state.py:state_file_for_session — keep in sync
+    """
+    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in (session_id or ""))
+    return safe[:160]
+
+
 def get_state_file() -> Path:
-    """Resolve state file path, respecting HERMES_HOME override."""
+    """Resolve state file path, respecting HERMES_HOME and HERMES_SESSION_ID.
+
+    If HERMES_SESSION_ID is set and the per-session file exists, return it.
+    Otherwise fall back to the global state.json (fail-closed default).
+
+    # Mirrors state.py:state_file_for_session — keep in sync
+    """
     home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
-    return Path(home) / "moa-gate" / "state.json"
+    global_path = Path(home) / "moa-gate" / "state.json"
+
+    session_id = os.environ.get("HERMES_SESSION_ID", "").strip()
+    safe = _safe_session_id(session_id)
+    if safe:
+        session_path = Path(home) / "moa-gate" / "sessions" / f"{safe}.json"
+        if session_path.exists():
+            return session_path
+
+    return global_path
 
 
 def get_key() -> str:
@@ -34,7 +58,7 @@ def get_key() -> str:
         if env_path.exists():
             for line in env_path.read_text().splitlines():
                 if line.startswith("MOA_GATE_KEY="):
-                    key = line.split("=", 1)[1].strip()
+                    key = line.split("=", 1)[1].strip().strip("'\"")
                     os.environ["MOA_GATE_KEY"] = key
                     break
     return key

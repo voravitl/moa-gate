@@ -121,9 +121,9 @@ def log(action: str, *, tool: str = "", by: Optional[List[str]] = None,
                 entry["hash"] = _compute_hash(entry)
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
                 f.flush()
+                AUDIT_FILE.chmod(0o600)
             finally:
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-        AUDIT_FILE.chmod(0o600)
     except Exception as exc:
         logger.error("MOA Gate audit: append failed: %s", exc)
         return

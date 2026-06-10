@@ -92,7 +92,7 @@ def _load_or_generate_key() -> str:
             existing = env_path.read_text()
             for line in existing.splitlines():
                 if line.startswith(f"{ENV_KEY_NAME}="):
-                    stored_key = line.split("=", 1)[1].strip()
+                    stored_key = line.split("=", 1)[1].strip().strip("'\"")
                     if stored_key:
                         os.environ[ENV_KEY_NAME] = stored_key
                         logger.info("Loaded existing MOA_GATE_KEY from .env")
@@ -163,7 +163,7 @@ def sync_key() -> str:
         if env_path.exists():
             for line in env_path.read_text().splitlines():
                 if line.startswith(f"{ENV_KEY_NAME}="):
-                    stored_key = line.split("=", 1)[1].strip()
+                    stored_key = line.split("=", 1)[1].strip().strip("'\"")
                     if stored_key:
                         os.environ[ENV_KEY_NAME] = stored_key
                         return stored_key
@@ -210,9 +210,9 @@ def verify(data: Dict[str, Any]) -> bool:
 
 def _parse_ttl(ttl_str: str) -> int:
     """Parse TTL string like '15m', '1h', '60s' to seconds.
-    
+
     Supports: 30s, 15m, 1h, or plain number (assumed minutes).
-    Returns seconds. Clamps to [0, MAX_TTL_SECONDS].
+    Returns seconds. Clamps to [1, MAX_TTL_SECONDS].
     """
     ttl_str = ttl_str.strip().lower()
     if ttl_str.endswith("s"):
@@ -228,7 +228,7 @@ def _parse_ttl(ttl_str: str) -> int:
         except ValueError:
             seconds = DEFAULT_TTL_SECONDS
 
-    return max(0, min(seconds, MAX_TTL_SECONDS))
+    return max(1, min(seconds, MAX_TTL_SECONDS))
 
 
 def _is_expired(expires_at: Optional[str]) -> bool:

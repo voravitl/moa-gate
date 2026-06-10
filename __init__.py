@@ -70,11 +70,16 @@ TERMINAL_READONLY_PATTERNS = re.compile(
     r"|(?:ls|cat|head|tail|which|echo|env|pwd|df|du|ps|top|date|cal)\s*$"
     # build/test tools
     r"|(?:cargo\s+(?:check|test|build|fmt|clippy|doc)|npm\s+(?:test|run|ls)|pytest|python3?\s+-m\s+(?:pytest|unittest)|make)\s*(?!.*[|;&>])"
-    # AI review (safe)
-    r"|claude\s+-p\s+"
+    # AI review (safe) — lookahead guards against piped/redirected abuse
+    r"|claude\s+-p\s+(?!.*[|;&>])"
     r")",
     re.IGNORECASE,
 )
+
+# Reject shell metacharacters anywhere in the command before consulting
+# the read-only whitelist — newlines defeat the start-anchored match,
+# and backticks/$( ) run subcommands even in "read-only" commands
+TERMINAL_SHELL_META = re.compile(r"[\n\r|;&<>`]|\$\(")
 
 # Auto-approve settings (can be overridden via env)
 AUTO_THRESHOLD = float(os.environ.get("MOA_GATE_AUTO_THRESHOLD", "0.8"))  # 80%
@@ -153,8 +158,9 @@ def _check_rate_limit() -> Tuple[bool, int]:
 
         return allowed, remaining
     except Exception as exc:
-        logger.warning("MOA Gate rate limiter error: %s", exc)
-        return True, -1  # Fail-open: allow on error
+        logger.error("MOA Gate rate limiter error (failing closed): %s", exc)
+        au.log("error", reason=f"rate_limiter_failed: {exc}")
+        return False, 0  # Fail-closed: deny on error (manual approval still works)
 
 
 # ---------------------------------------------------------------------------
@@ -221,12 +227,10 @@ def _on_pre_tool_call(
     if not tool_name:
         return None
 
-    # FIX (moa-gate issue #367 CRITICAL #1 + Codex re-review #2): both the
-    # slash command and the pre_tool_call hook must agree on the session_id
-    # strategy. hooks/pre-commit.py only reads the legacy global state.json,
-    # so we always use session_id="" (legacy global path) — no per-session
-    # fallback. Per-session isolation can be added later by making the
-    # pre-commit hook aware of session_id.
+    # Session strategy must agree across all three enforcement points:
+    # slash commands, this hook, and hooks/pre-commit.py all resolve the
+    # per-session state via HERMES_SESSION_ID (pre-commit falls back to
+    # the global state.json when unset or the session file is missing).
     session_id = session_id or os.environ.get("HERMES_SESSION_ID", "") or ""
 
     # Sync HMAC key from .env — keeps Hermes in sync if subprocess overwrote
@@ -237,9 +241,12 @@ def _on_pre_tool_call(
         return None
 
     # Terminal read-only whitelist
+    # TERMINAL_SHELL_META is checked first: newlines bypass the start-anchored
+    # match and backticks/$(...) execute subcommands even in "safe" commands.
     if tool_name == "terminal" and isinstance(args, dict):
         cmd = args.get("command", "")
-        if isinstance(cmd, str) and TERMINAL_READONLY_PATTERNS.match(cmd):
+        if (isinstance(cmd, str) and not TERMINAL_SHELL_META.search(cmd)
+                and TERMINAL_READONLY_PATTERNS.match(cmd)):
             return None
 
     # Read per-session state
