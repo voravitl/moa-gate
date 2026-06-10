@@ -40,6 +40,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -198,47 +199,57 @@ def _on_pre_tool_call(
         logger.warning("moa-multimodel: diff capture failed: %s", exc)
         return None
 
-    if not Path(diff_path).exists():
-        return None
-
-    # Auto-trigger fires at gh_pr_create time — the PR does not exist yet,
-    # so we pass "manual" so council.sh skips the gh-pr-comment block.
-    run_dir = _setup_voice_prompts(diff_path, "manual", repo_path)
-
-    # Run the council script
+    # diff_path created; ensure it and run_dir are cleaned up on every exit path
+    run_dir: Optional[str] = None
     try:
-        result = subprocess.run(
-            ["bash", _COUNCIL_SCRIPT, diff_path, "manual"],
-            capture_output=True, text=True, timeout=900,  # 15 min
-            env={**os.environ,
-                 "MOA_GATE_PLUGIN_PATH": _resolve_moa_gate_path(),
-                 "MOA_RUN_DIR": run_dir},
-        )
-        logger.info("moa-multimodel council: exit=%d\n%s",
-                    result.returncode, result.stdout[-2000:])
-        if result.returncode == 2:
+        if not Path(diff_path).exists():
+            return None
+
+        # Auto-trigger fires at gh_pr_create time — the PR does not exist yet,
+        # so we pass "manual" so council.sh skips the gh-pr-comment block.
+        run_dir = _setup_voice_prompts(diff_path, "manual", repo_path)
+
+        # Run the council script
+        try:
+            result = subprocess.run(
+                ["bash", _COUNCIL_SCRIPT, diff_path, "manual"],
+                capture_output=True, text=True, timeout=900,  # 15 min
+                env={**os.environ,
+                     "MOA_GATE_PLUGIN_PATH": _resolve_moa_gate_path(),
+                     "MOA_RUN_DIR": run_dir},
+            )
+            logger.info("moa-multimodel council: exit=%d\n%s",
+                        result.returncode, result.stdout[-2000:])
+            if result.returncode == 2:
+                return {
+                    "action": "block",
+                    "message": (
+                        "🛑 MOA Multi-Model: fewer than 2 substantive council "
+                        "voices — manual review required.\n"
+                        "   Run `/moa-multimodel review "
+                        f"{diff_path}` to retry."
+                    ),
+                }
+        except subprocess.TimeoutExpired:
             return {
                 "action": "block",
                 "message": (
-                    "🛑 MOA Multi-Model: fewer than 2 substantive council "
-                    "voices — manual review required.\n"
-                    "   Run `/moa-multimodel review "
-                    f"{diff_path}` to retry."
+                    "🛑 MOA Multi-Model: Council timed out after 15 min.\n"
+                    "   Run `/moa-multimodel review <diff>` manually to retry."
                 ),
             }
-    except subprocess.TimeoutExpired:
-        return {
-            "action": "block",
-            "message": (
-                "🛑 MOA Multi-Model: Council timed out after 15 min.\n"
-                "   Run `/moa-multimodel review <diff>` manually to retry."
-            ),
-        }
-    except Exception as exc:
-        return {
-            "action": "block",
-            "message": f"🛑 MOA Multi-Model: Council script failed: {exc}",
-        }
+        except Exception as exc:
+            return {
+                "action": "block",
+                "message": f"🛑 MOA Multi-Model: Council script failed: {exc}",
+            }
+    finally:
+        try:
+            os.unlink(diff_path)
+        except OSError:
+            pass
+        if run_dir is not None:
+            shutil.rmtree(run_dir, ignore_errors=True)
 
     # Council completed. We do NOT block the gh pr create call — the
     # user has already written the PR. Verdicts are advisory only and
@@ -274,6 +285,8 @@ def _handle_council_review(raw_args: str) -> str:
         )
     except Exception as exc:
         return f"❌ Council script failed: {exc}"
+    finally:
+        shutil.rmtree(run_dir, ignore_errors=True)
 
 
 def _setup_voice_prompts(diff_path: str, pr_number: str, repo_path: str) -> str:
@@ -310,12 +323,6 @@ def _setup_voice_prompts(diff_path: str, pr_number: str, repo_path: str) -> str:
         f"runtime cost, scope creep, breaking changes. Return ONLY: APPROVE "
         f"or REQUEST_CHANGES, 2-4 bullets. Be terse."
     )
-    pragmatist_pipe = (
-        "MOA Pragmatist review. Diff summary in stdin. Return ONLY: APPROVE "
-        "or REQUEST_CHANGES, 2-4 bullets. Be terse."
-    )
-
-    diff_q = shlex.quote(diff_path)
     run_dir = Path(tempfile.mkdtemp(prefix="moa-multimodel-"))
     (run_dir / "claude-cmd.sh").write_text(
         f"#!/bin/bash\nclaude -p {shlex.quote(architect)} --model sonnet\n"
@@ -326,10 +333,7 @@ def _setup_voice_prompts(diff_path: str, pr_number: str, repo_path: str) -> str:
     (run_dir / "agy-cmd.sh").write_text(
         f"#!/bin/bash\nagy -p {shlex.quote(pragmatist)}\n"
     )
-    (run_dir / "agy-pipe-cmd.sh").write_text(
-        f"#!/bin/bash\ncat {diff_q} | agy -p {shlex.quote(pragmatist_pipe)}\n"
-    )
-    for f in ("claude-cmd.sh", "codex-cmd.sh", "agy-cmd.sh", "agy-pipe-cmd.sh"):
+    for f in ("claude-cmd.sh", "codex-cmd.sh", "agy-cmd.sh"):
         (run_dir / f).chmod(0o755)
     return str(run_dir)
 

@@ -25,6 +25,7 @@ PR=${2:-"manual"}
 RUN_DIR="${MOA_RUN_DIR:-}"
 if [ -z "$RUN_DIR" ]; then
   RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/moa-council.XXXXXX")
+  trap 'rm -rf "$RUN_DIR"' EXIT
 fi
 chmod 700 "$RUN_DIR"
 STATUS_FILE="$RUN_DIR/moa-status"
@@ -107,7 +108,7 @@ run_voice() {
 
   # Write verdict file (full body, not just verdict)
   {
-    echo "## MOA $(echo $voice | awk '{print toupper(substr($0,1,1)) substr($0,2)}') Review"
+    echo "## MOA $(echo "$voice" | awk '{print toupper(substr($0,1,1)) substr($0,2)}') Review"
     echo
     echo "$out" | tail -50
     echo
@@ -218,7 +219,7 @@ if [ "$PR" != "manual" ] && command -v gh >/dev/null 2>&1; then
       gh pr comment "$PR" --body-file "$f" 2>/dev/null || true
       # Label only on an actual APPROVE — a REQUEST_CHANGES/UNCLEAR
       # verdict must not get a "*-approved" label
-      if grep -q "Verdict: APPROVE" "$f"; then
+      if grep -qxF '**Verdict: APPROVE**' "$f"; then
         case "$voice" in
           architect) gh pr edit "$PR" --add-label moa-claude-approved 2>/dev/null || true ;;
           skeptic)   gh pr edit "$PR" --add-label moa-codex-approved 2>/dev/null || true ;;

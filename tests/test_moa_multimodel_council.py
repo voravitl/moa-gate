@@ -131,12 +131,41 @@ def test_skeptic_dissent_withholds_auto_approve(tmp_path):
 
 
 def test_non_safety_dissent_still_auto_approves(tmp_path):
-    """2/3 APPROVE with pragmatist (non-safety) dissent → auto-approve runs."""
+    """2/3 APPROVE with pragmatist (non-safety) dissent → auto-approve runs
+    and actually calls the plugin's approve(), producing a marker file."""
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     _write_cmd(run_dir, "claude-cmd.sh", 'echo "Correct and idiomatic. APPROVE"')
     _write_cmd(run_dir, "codex-cmd.sh", 'echo "No hidden assumptions. APPROVE"')
     _write_cmd(run_dir, "agy-cmd.sh", 'echo "Scope creep concern. REQUEST_CHANGES"')
-    result = _run_council(tmp_path, run_dir)
+
+    # Stub plugin: records approve() call to a marker file and returns success
+    plugin_dir = tmp_path / "plugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "state.py").write_text(
+        "import json\n"
+        "from pathlib import Path\n"
+        "def approve(approved_by, reason, session_id='', ttl_seconds=0, **kw):\n"
+        "    Path(__file__).parent.joinpath('approve_called.json').write_text(\n"
+        "        json.dumps({'approved_by': approved_by, 'reason': reason})\n"
+        "    )\n"
+        "    return {'status': 'approved', 'expires_at': 'x'}\n"
+    )
+    marker = plugin_dir / "approve_called.json"
+
+    diff = tmp_path / "diff.patch"
+    diff.write_text("--- a/x\n+++ b/x\n")
+    env = {
+        **os.environ,
+        "MOA_GATE_PLUGIN_PATH": str(plugin_dir),
+        "MOA_RUN_DIR": str(run_dir),
+    }
+    result = subprocess.run(
+        ["bash", str(COUNCIL), str(diff), "manual"],
+        capture_output=True, text=True, timeout=60, env=env,
+    )
+
     assert result.returncode == 0, result.stdout
     assert "Writing moa-gate state.json" in result.stdout
+    assert "state.json updated" in result.stdout, result.stdout
+    assert marker.exists(), f"approve() was not called; stdout={result.stdout}"
