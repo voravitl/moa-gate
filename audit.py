@@ -97,8 +97,6 @@ def log(action: str, *, tool: str = "", by: Optional[List[str]] = None,
         trigger: "manual" | "auto_majority" | "emergency" | "ttl_expired" | "session_end" | ""
         tier: 1 or 2 (for auto_approve/shadow_block)
     """
-    prev_hash = _read_last_hash()
-
     entry: Dict[str, Any] = {
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "action": action,
@@ -108,24 +106,23 @@ def log(action: str, *, tool: str = "", by: Optional[List[str]] = None,
         "session_id": session_id or "",
         "trigger": trigger or "",
         "tier": tier if tier else 0,
-        "prev_hash": prev_hash,
     }
 
-    # Compute this entry's hash
-    entry_hash = _compute_hash(entry)
-    entry["hash"] = entry_hash
-
-    # Atomically append
     AUDIT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    line = json.dumps(entry, ensure_ascii=False) + "\n"
 
-    # Use fcntl flock for exclusive write access
+    # Read-last-hash + append must be one critical section under the same
+    # flock, otherwise concurrent writers all read the same prev_hash and
+    # fork the chain (issue #368).
     try:
         with open(str(AUDIT_FILE), "a") as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-            f.write(line)
-            f.flush()
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            try:
+                entry["prev_hash"] = _read_last_hash()
+                entry["hash"] = _compute_hash(entry)
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                f.flush()
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
         AUDIT_FILE.chmod(0o600)
     except Exception as exc:
         logger.error("MOA Gate audit: append failed: %s", exc)
