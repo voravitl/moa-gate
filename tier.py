@@ -60,7 +60,9 @@ TIER_2_PATH_PATTERNS = re.compile(
     r"audit|compliance|gdp[rr]|pcidss|sox|hipaa|pci|"
     # Enterprise tools
     r"byok|kms|hsm|key.?management|"
-    r"enterprise|tenant|multi.?tenant"
+    r"enterprise|tenant|multi.?tenant|"
+    # Infra tools (conservative: these tool names in file paths signal infra scripts)
+    r"mkfs|fdisk|iptables"
     r")"
 )
 
@@ -94,7 +96,23 @@ TIER_2_FREETEXT_PATTERNS = re.compile(
     r"audit|compliance|gdp[rr]|pcidss|sox|hipaa|pci|"
     # Enterprise tools
     r"byok|kms|hsm|key.?management|"
-    r"enterprise|tenant|multi.?tenant"
+    r"enterprise|tenant|multi.?tenant|"
+    # Destructive shell / FS operations (word-boundary safe)
+    r"\brm\s+-[rRfF]*[rR][rRfF]*|"          # rm -r/-rf/-fr/-fR etc. (recursive delete)
+    r"\bsudo\s+rm\b|"                         # sudo rm (privileged removal, any flags)
+    r"shutil\.rmtree|"                         # Python: shutil.rmtree(path)
+    r"os\.remove\(|"                           # Python: os.remove(path)
+    r"os\.unlink\(|"                           # Python: os.unlink(path)
+    r"\bgit\s+push\s+--force\b|"             # git push --force (including --force-with-lease)
+    r"\bgit\s+push\s+-f\b|"                  # git push -f shorthand
+    r"\bforce[-\s]push\b|"                    # force-push / force push
+    r"\bchmod\s+(?:[0-7]{2}[2367]|[0-7]{3}[2367])\b|"  # chmod world-writable octal
+    r"\bchown\s+root\b|"                      # chown root (ownership change to root)
+    r"\bdd\s+if=|"                            # dd if=<src> (raw disk copy / wipe)
+    r"\bmkfs\b|"                              # mkfs (make filesystem, destructive)
+    r"\bfdisk\b|"                             # fdisk (disk partition editor)
+    r"\biptables\s+-F\b|"                     # iptables -F (flush firewall rules)
+    r"\bsystemctl\s+(?:stop|disable)\b"       # systemctl stop/disable service
     r")"
 )
 

@@ -152,3 +152,219 @@ def test_diff_kw_next_token_tier1():
 def test_diff_kw_password_tier2():
     """Diff keyword 'password' must still flag."""
     assert tier.classify_by_keywords("", diff_keywords=["password", "hash"]) == tier.TIER_2
+
+
+# ---------------------------------------------------------------------------
+# Destructive shell / FS operations: new Tier-2 patterns (positives)
+# Each tests that the new patterns classify as TIER_2.
+# ---------------------------------------------------------------------------
+
+
+def test_rm_rf_tier2():
+    """'rm -rf /data' must be flagged as Tier 2 (recursive forced delete)."""
+    assert tier.classify_by_keywords("rm -rf /data") == tier.TIER_2
+
+
+def test_rm_fr_tier2():
+    """'rm -fr' flag order variant must still be flagged."""
+    assert tier.classify_by_keywords("rm -fr /tmp/old") == tier.TIER_2
+
+
+def test_rm_r_only_tier2():
+    """`rm -r` (recursive, no force flag) must be flagged."""
+    assert tier.classify_by_keywords("rm -r /var/logs") == tier.TIER_2
+
+
+def test_rm_fR_variant_tier2():
+    """'rm -fR' mixed-case flag must be flagged."""
+    assert tier.classify_by_keywords("cleanup with rm -fR /mnt/data") == tier.TIER_2
+
+
+def test_sudo_rm_tier2():
+    """'sudo rm' (privileged removal, any flags) must be flagged."""
+    assert tier.classify_by_keywords("sudo rm /etc/critical_config") == tier.TIER_2
+
+
+def test_sudo_rm_rf_tier2():
+    """'sudo rm -rf' must be flagged (both sudo rm and rm -rf match)."""
+    assert tier.classify_by_keywords("sudo rm -rf /var/data") == tier.TIER_2
+
+
+def test_shutil_rmtree_tier2():
+    """Python shutil.rmtree call must be flagged (recursive directory removal)."""
+    assert tier.classify_by_keywords("call shutil.rmtree(output_dir) before rebuild") == tier.TIER_2
+
+
+def test_os_remove_tier2():
+    """Python os.remove( must be flagged."""
+    assert tier.classify_by_keywords("use os.remove(path) to delete the lockfile") == tier.TIER_2
+
+
+def test_os_unlink_tier2():
+    """Python os.unlink( must be flagged."""
+    assert tier.classify_by_keywords("os.unlink(stale_pid_file) on startup") == tier.TIER_2
+
+
+def test_git_push_force_tier2():
+    """'git push --force' must be flagged (history rewrite)."""
+    assert tier.classify_by_keywords("git push --force origin main") == tier.TIER_2
+
+
+def test_git_push_force_with_lease_tier2():
+    """'git push --force-with-lease' must be flagged (still a force push)."""
+    assert tier.classify_by_keywords("git push --force-with-lease origin feature") == tier.TIER_2
+
+
+def test_git_push_f_tier2():
+    """'git push -f' shorthand must be flagged."""
+    assert tier.classify_by_keywords("git push -f origin hotfix") == tier.TIER_2
+
+
+def test_force_push_hyphen_tier2():
+    """'force-push' (hyphenated) must be flagged."""
+    assert tier.classify_by_keywords("force-push changes to shared branch") == tier.TIER_2
+
+
+def test_force_push_space_tier2():
+    """'force push' (with space) must be flagged."""
+    assert tier.classify_by_keywords("force push to release branch") == tier.TIER_2
+
+
+def test_chmod_777_tier2():
+    """'chmod 777' (world-writable) must be flagged."""
+    assert tier.classify_by_keywords("chmod 777 /etc/passwd") == tier.TIER_2
+
+
+def test_chmod_0777_tier2():
+    """'chmod 0777' (4-digit world-writable octal) must be flagged."""
+    assert tier.classify_by_keywords("chmod 0777 /tmp/script.sh") == tier.TIER_2
+
+
+def test_chmod_666_tier2():
+    """'chmod 666' (world-writable without execute) must be flagged."""
+    assert tier.classify_by_keywords("chmod 666 /etc/hosts") == tier.TIER_2
+
+
+def test_chmod_0666_tier2():
+    """'chmod 0666' (4-digit 666) must be flagged."""
+    assert tier.classify_by_keywords("chmod 0666 sensitive.conf") == tier.TIER_2
+
+
+def test_chown_root_tier2():
+    """'chown root' must be flagged (root ownership change)."""
+    assert tier.classify_by_keywords("chown root:root /etc/cron.d/job") == tier.TIER_2
+
+
+def test_dd_if_tier2():
+    """'dd if=' (raw disk copy/wipe) must be flagged."""
+    assert tier.classify_by_keywords("dd if=/dev/zero of=/dev/sda bs=4M") == tier.TIER_2
+
+
+def test_mkfs_tier2():
+    """'mkfs' (make filesystem, destructive) must be flagged."""
+    assert tier.classify_by_keywords("mkfs.ext4 /dev/sdb1") == tier.TIER_2
+
+
+def test_fdisk_tier2():
+    """'fdisk' (disk partition editor) must be flagged."""
+    assert tier.classify_by_keywords("fdisk /dev/sda to repartition") == tier.TIER_2
+
+
+def test_iptables_flush_tier2():
+    """'iptables -F' (flush all firewall rules) must be flagged."""
+    assert tier.classify_by_keywords("iptables -F INPUT to reset firewall") == tier.TIER_2
+
+
+def test_systemctl_stop_tier2():
+    """'systemctl stop' must be flagged (service disruption)."""
+    assert tier.classify_by_keywords("systemctl stop nginx before deploy") == tier.TIER_2
+
+
+def test_systemctl_disable_tier2():
+    """'systemctl disable' must be flagged (permanent service removal)."""
+    assert tier.classify_by_keywords("systemctl disable firewalld on boot") == tier.TIER_2
+
+
+def test_path_mkfs_script_tier2():
+    """Path containing 'mkfs' must be flagged (infra filesystem script)."""
+    assert tier.classify_by_keywords("", changed_paths=["scripts/mkfs_helper.sh"]) == tier.TIER_2
+
+
+def test_path_fdisk_wrapper_tier2():
+    """Path containing 'fdisk' must be flagged."""
+    assert tier.classify_by_keywords("", changed_paths=["utils/fdisk_wrapper.py"]) == tier.TIER_2
+
+
+def test_path_iptables_conf_tier2():
+    """Path containing 'iptables' must be flagged."""
+    assert tier.classify_by_keywords("", changed_paths=["config/iptables_rules.conf"]) == tier.TIER_2
+
+
+# ---------------------------------------------------------------------------
+# Destructive operations: false-positive guards (must stay Tier 1)
+# These descriptions contain surface-similar tokens but must NOT trigger.
+# ---------------------------------------------------------------------------
+
+
+def test_rmdir_helper_tier1():
+    """'rmdir_helper cleanup' must NOT trigger rm -rf pattern.
+
+    'rmdir_helper' starts with 'rm' but has no space+dash after it,
+    so the rm flag pattern does not match.
+    """
+    assert tier.classify_by_keywords("rmdir_helper cleanup routine") == tier.TIER_1
+
+
+def test_perform_removal_unused_imports_tier1():
+    """'perform removal of unused imports' must stay Tier 1.
+
+    'removal' is not 'rm -rf'; \\bremove\\b doesn't match 'removal'.
+    No destructive operation is present.
+    """
+    assert tier.classify_by_keywords("perform removal of unused imports") == tier.TIER_1
+
+
+def test_ddd_debugger_tier1():
+    """'ddd debugger tool' must NOT trigger the dd if= pattern.
+
+    'ddd' has no word boundary after 'dd' (followed by another 'd'),
+    and there is no 'if=' substring.
+    """
+    assert tier.classify_by_keywords("ddd debugger tool") == tier.TIER_1
+
+
+def test_remove_unused_imports_identifier_tier1():
+    """'remove_unused_imports' (compound identifier) must stay Tier 1.
+
+    \\bremove\\b does not match because '_' is a word character,
+    so there is no word boundary between 'remove' and '_unused'.
+    """
+    assert tier.classify_by_keywords("remove_unused_imports") == tier.TIER_1
+
+
+def test_format_code_tier1():
+    """'format the code style' must NOT trigger mkfs or fdisk patterns."""
+    assert tier.classify_by_keywords("format the code style") == tier.TIER_1
+
+
+def test_chmod_644_not_world_writable_tier1():
+    """'chmod 644' is NOT world-writable; must stay Tier 1."""
+    assert tier.classify_by_keywords("chmod 644 config.yaml") == tier.TIER_1
+
+
+def test_chmod_755_not_world_writable_tier1():
+    """'chmod 755' (owner rwx, group/others rx) is NOT world-writable; Tier 1."""
+    assert tier.classify_by_keywords("chmod 755 run.sh") == tier.TIER_1
+
+
+def test_enforce_push_tier1():
+    """'enforce push policy' must NOT match \\bforce[-\\s]push\\b.
+
+    'enforce' has no word boundary before 'force' (preceded by 'en').
+    """
+    assert tier.classify_by_keywords("enforce push policy in CI") == tier.TIER_1
+
+
+def test_informal_naming_tier1():
+    """Generic benign phrase with no destructive keywords stays Tier 1."""
+    assert tier.classify_by_keywords("informal naming convention review") == tier.TIER_1
