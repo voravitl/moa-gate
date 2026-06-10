@@ -80,3 +80,49 @@ def test_status_reason_field_not_leaked_into_summary(tmp_path):
     result = _run_council(tmp_path)
     assert "exit_1=" not in result.stdout
     assert "architect=ESCALATED" in result.stdout
+
+
+def test_prompt_echo_does_not_override_final_verdict(tmp_path):
+    """An echoed instruction line containing REQUEST_CHANGES must not beat
+    the model's final standalone APPROVE (last keyword wins)."""
+    body = ('echo "Return ONLY: APPROVE or REQUEST_CHANGES"; '
+            'echo "Code is correct and idiomatic."; echo "APPROVE"')
+    for f in VOICE_CMD_FILES:
+        _write_cmd(f, body)
+    result = _run_council(tmp_path)
+    assert result.returncode == 0, result.stdout
+    assert "Approvals: 3" in result.stdout
+
+
+def test_unclear_verdict_counted_as_escalated(tmp_path):
+    """Output with no verdict keyword is UNCLEAR — must count as escalated,
+    not vanish from the summary."""
+    _write_cmd("claude-cmd.sh", 'echo "Looks correct and idiomatic. APPROVE"')
+    _write_cmd("codex-cmd.sh", 'echo "ambiguous rambling without any keywords"')
+    _write_cmd("agy-cmd.sh", 'echo "more rambling, still no decision made"')
+    result = _run_council(tmp_path)
+    assert result.returncode == 2, result.stdout  # only 1 substantive voice
+    assert "skeptic=UNCLEAR" in result.stdout
+    assert "Escalated/empty: 2" in result.stdout
+
+
+def test_skeptic_dissent_withholds_auto_approve(tmp_path):
+    """2/3 APPROVE but skeptic dissents — safety role blocks auto-approve."""
+    _write_cmd("claude-cmd.sh", 'echo "Correct and idiomatic. APPROVE"')
+    _write_cmd("codex-cmd.sh",
+               'echo "Hidden assumption in tier logic. REQUEST_CHANGES"')
+    _write_cmd("agy-cmd.sh", 'echo "No migration risk found. APPROVE"')
+    result = _run_council(tmp_path)
+    assert result.returncode == 0, result.stdout
+    assert "Skeptic dissent" in result.stdout
+    assert "Writing moa-gate state.json" not in result.stdout
+
+
+def test_non_safety_dissent_still_auto_approves(tmp_path):
+    """2/3 APPROVE with pragmatist (non-safety) dissent → auto-approve runs."""
+    _write_cmd("claude-cmd.sh", 'echo "Correct and idiomatic. APPROVE"')
+    _write_cmd("codex-cmd.sh", 'echo "No hidden assumptions. APPROVE"')
+    _write_cmd("agy-cmd.sh", 'echo "Scope creep concern. REQUEST_CHANGES"')
+    result = _run_council(tmp_path)
+    assert result.returncode == 0, result.stdout
+    assert "Writing moa-gate state.json" in result.stdout

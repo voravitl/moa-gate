@@ -21,6 +21,8 @@ Fail-back (verified 2026-06-08):
 - codex rate limit: "rate limit exceeded" / 429 / RATE_LIMIT_PATTERNS
 - agy: silent fail (exit 0, 0 bytes) is env/credential, NOT rate limit
 - 2/3 substantive voices sufficient signal; 1/3 blocks; 0/3 blocks
+- skeptic dissent (safety role, mirrors moa-gate SAFETY_ROLES) withholds
+  auto-approve even at 2/3 — manual review required
 
 Plugin does NOT replace moa-gate. It feeds moa-gate verdicts.
 
@@ -333,6 +335,7 @@ Auto-trigger: this plugin's pre_tool_call hook auto-runs council when
 Fail-back: if any model is rate-limited, the plugin waits 60s and retries
 ONCE. AGY silent fail is treated as env/credential issue (not retry).
 2/3 substantive voices is sufficient signal; 1/3 blocks; 0/3 blocks.
+Skeptic dissent (safety role) withholds auto-approve even at 2/3.
 
 Environment:
   MOA_MULTIMODEL_REPO       Override repo for `git diff main...HEAD`

@@ -81,15 +81,17 @@ run_voice() {
     return 0
   fi
 
-  # Extract verdict
+  # Extract verdict — last standalone keyword wins, so an echoed prompt
+  # ("Return ONLY: APPROVE or REQUEST_CHANGES") earlier in the output
+  # cannot override the model's final verdict. -w prevents substring
+  # hits like DISAPPROVE.
   local verdict
-  if echo "$out" | grep -qiE "REQUEST_CHANGES"; then
-    verdict="REQUEST_CHANGES"
-  elif echo "$out" | tail -20 | grep -qiE "APPROVE"; then
-    verdict="APPROVE"
-  else
-    verdict="UNCLEAR"
-  fi
+  verdict=$(echo "$out" | grep -woiE 'REQUEST_CHANGES|APPROVED?' | tail -1 | tr '[:lower:]' '[:upper:]')
+  case "$verdict" in
+    APPROVED) verdict="APPROVE" ;;
+    APPROVE|REQUEST_CHANGES) ;;
+    *) verdict="UNCLEAR" ;;
+  esac
 
   # Write verdict file (full body, not just verdict)
   {
@@ -117,6 +119,7 @@ run_voice pragmatist /tmp/agy-cmd.sh
 approve_count=0
 escalated_count=0
 total_substantive=0
+safety_dissent=0
 verdict_summary=""
 
 while IFS='|' read -r verdict voice _; do
@@ -129,6 +132,15 @@ while IFS='|' read -r verdict voice _; do
     REQUEST_CHANGES)
       total_substantive=$((total_substantive + 1))
       verdict_summary="${verdict_summary}${voice}=REQUEST_CHANGES "
+      # Mirror moa-gate SAFETY_ROLES: dissent from the skeptic voice
+      # forces manual review regardless of the approval count
+      if [ "$voice" = "skeptic" ]; then
+        safety_dissent=1
+      fi
+      ;;
+    UNCLEAR)
+      escalated_count=$((escalated_count + 1))
+      verdict_summary="${verdict_summary}${voice}=UNCLEAR "
       ;;
     ESCALATED|EMPTY|HARD_FAIL|SKIPPED)
       escalated_count=$((escalated_count + 1))
@@ -144,8 +156,8 @@ echo "Approvals: ${approve_count}"
 echo "Escalated/empty: ${escalated_count}"
 echo "Verdicts: ${verdict_summary}"
 
-# ── Write moa-gate state.json if 2/3 approve ──────────────────────
-if [ $approve_count -ge 2 ] && [ $total_substantive -ge 2 ]; then
+# ── Write moa-gate state.json if 2/3 approve (no safety dissent) ──
+if [ $approve_count -ge 2 ] && [ $total_substantive -ge 2 ] && [ $safety_dissent -eq 0 ]; then
   echo ""
   echo "=== Writing moa-gate state.json (auto-approve) ==="
 
@@ -180,6 +192,9 @@ elif [ $total_substantive -lt 2 ]; then
   echo ""
   echo "🛑 Less than 2 substantive voices — blocking (need manual review)"
   exit_code=2
+elif [ $safety_dissent -eq 1 ]; then
+  echo ""
+  echo "⚠️  Skeptic dissent (safety role) — auto-approve withheld, manual review required"
 fi
 
 # ── Post PR comments if PR number provided ─────────────────────────
