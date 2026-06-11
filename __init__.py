@@ -745,6 +745,16 @@ def _on_session_start(*, session_id: str = "", task: str = "",
         "model": model or "",
         "platform": platform or "",
     })
+
+    # ── LYN: context orchestrator (lyn-hooks) ──────────────────────────────
+    # เรียก lyn-hooks (UserPromptSubmit equivalent) เพื่อ inject context:
+    # memories, failures, anti-patterns, profile facts, skills, wiki chunks
+    # Hermes ไม่มี pre_prompt hook — inject ตอน session start แทน
+    _run_lyn_hook("hooks", {
+        "prompt": task or "session_start",
+        "session_id": session_id or "",
+    })
+
     logger.debug("LYN: session-start hook fired (session=%s)", session_id or "?")
 
 
