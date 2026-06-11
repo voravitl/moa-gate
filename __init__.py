@@ -94,6 +94,57 @@ MIN_COUNCIL_SIZE = int(os.environ.get("MOA_GATE_MIN_COUNCIL_SIZE", "3"))
 # Rate limiter state file
 RATE_FILE = Path.home() / ".hermes" / "moa-gate" / ".rate_counter.json"
 
+# ── LYN Hook integration ────────────────────────────────────────────────────
+# เรียก LYN hook binaries (lyn-memory-sync, lyn-auto-failure, lyn-session-start,
+# lyn-session-end) เหมือน Claude Code hooks protocol:
+#   stdin = JSON payload (tool_name, session_id, tool_response, tool_input, ...)
+#   stdout = {"continue": true/false, "suppressOutput": true/false, ...}
+# LYN hooks ไม่ block write (continue=true เสมอ) แค่เก็บ logs/telemetry
+
+LYN_HOOK_TIMEOUT = 5  # seconds per hook call; hooks that timeout are skipped
+
+
+def _run_lyn_hook(hook_name: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """เรียก LYN hook binary พร้อม JSON stdin และคืน verdict.
+
+    Args:
+        hook_name: ชื่อ hook binary (ไม่ต้องมี prefix 'lyn-')
+        payload: dict ที่จะส่งเป็น JSON ทาง stdin
+
+    Returns:
+        dict ที่ parse จาก stdout ของ hook ({"continue": bool, ...})
+        ถ้าเรียกไม่ได้ → {"continue": True} (fail-open — ห้าม block session)
+    """
+    import subprocess
+    from pathlib import Path
+
+    bin_path = Path.home() / ".local" / "bin" / f"lyn-{hook_name}"
+    if not bin_path.exists():
+        # ยังไม่ได้ build → skip เงียบๆ
+        return {"continue": True}
+
+    stdin_json = json.dumps(payload or {}, ensure_ascii=False)
+    try:
+        result = subprocess.run(
+            [str(bin_path)],
+            input=stdin_json,
+            capture_output=True,
+            text=True,
+            timeout=LYN_HOOK_TIMEOUT,
+        )
+        # LYN hooks คืน JSON 2+ บรรทัด; บรรทัดสุดท้ายคือ verdict
+        lines = [l.strip() for l in result.stdout.split("\n") if l.strip()]
+        if lines:
+            verdict = json.loads(lines[-1])
+            if isinstance(verdict, dict):
+                return verdict
+    except subprocess.TimeoutExpired:
+        logger.debug("lyn-%s: timeout after %ss", hook_name, LYN_HOOK_TIMEOUT)
+    except (subprocess.CalledProcessError, json.JSONDecodeError, OSError) as exc:
+        logger.debug("lyn-%s: hook error: %s", hook_name, exc)
+
+    return {"continue": True}
+
 
 # ---------------------------------------------------------------------------
 # Rate limiter
@@ -234,6 +285,16 @@ def _on_pre_tool_call(
     # per-session state via HERMES_SESSION_ID (pre-commit falls back to
     # the global state.json when unset or the session file is missing).
     session_id = session_id or os.environ.get("HERMES_SESSION_ID", "") or ""
+
+    # ── LYN: auto-failure capture (pre-tool) ────────────────────────────
+    # เรียก lyn-auto-failure ก่อน MOA gate check
+    # ไม่มี tool_response ใน pre_tool_call แต่ hook จะ continue=true เสมอ
+    _run_lyn_hook("auto-failure", {
+        "tool_name": tool_name,
+        "tool_input": args or {},
+        "session_id": session_id or "",
+        "task_id": task_id or "",
+    })
 
     # Sync HMAC key from .env — keeps Hermes in sync if subprocess overwrote
     st.sync_key()
@@ -665,6 +726,29 @@ def _handle_slash(raw_args: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Session Start Hook (LYN)
+# ---------------------------------------------------------------------------
+
+def _on_session_start(*, session_id: str = "", task: str = "",
+                       model: str = "", platform: str = "",
+                       **_: Any) -> None:
+    """LYN session start hook — เรียก lyn-session-start เพื่อ restore context.
+
+    ส่ง session metadata ให้ LYN เพื่อ:
+    - Pull session capture (ถ้ามี paused session)
+    - Reset turn count / profile facts
+    - Inject plugin on_session_start hooks
+    """
+    _run_lyn_hook("session-start", {
+        "session_id": session_id or "",
+        "task": task or "",
+        "model": model or "",
+        "platform": platform or "",
+    })
+    logger.debug("LYN: session-start hook fired (session=%s)", session_id or "?")
+
+
+# ---------------------------------------------------------------------------
 # Session End Hook (P2)
 # ---------------------------------------------------------------------------
 
@@ -677,6 +761,15 @@ def _on_session_end(*, session_id: str = "", completed: bool = False,
     This handles graceful session shutdown.
     Uninterruptible signals (kill -9, crash) require TTL-only recovery.
     """
+    # ── LYN: session-end capture ─────────────────────────────────────────
+    # ส่ง session info ให้ lyn-session-end บันทึก auto-capture
+    _run_lyn_hook("session-end", {
+        "session_id": session_id or "",
+        "completed": completed,
+        "interrupted": interrupted,
+        "model": model or "",
+        "platform": platform or "",
+    })
     try:
         data = st.read(session_id)
         if data.get("status") == "approved":
@@ -722,6 +815,9 @@ def register(ctx) -> None:
     st.gc_stale_sessions()
 
     ctx.register_hook("pre_tool_call", _on_pre_tool_call)
+
+    # P0: on_session_start — LYN session context restore
+    ctx.register_hook("on_session_start", _on_session_start)
 
     # P1: Startup sweep — auto-expire state if TTL passed
     # st.read(session_id) checks expires_at and returns pending if expired

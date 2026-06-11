@@ -4,3 +4,5 @@ description: "MOA (Multi-Model Adviser) write-tool gate. Blocks patch/write/git/
 author: "Hermes (redesigned after 7-voice council review)"
 hooks:
   - pre_tool_call
+  - on_session_start
+  - on_session_end
